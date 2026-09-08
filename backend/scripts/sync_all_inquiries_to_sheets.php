@@ -26,33 +26,13 @@ $total = count($inquiries);
 echo "Found {$total} inquiries in database/storage.\n";
 echo "Starting synchronization to Google Sheets...\n\n";
 
-$successCount = 0;
-$failCount = 0;
-
-foreach ($inquiries as $index => $inquiry) {
-    $num = $index + 1;
-    $ref = $inquiry['referenceNumber'] ?? $inquiry['reference_number'] ?? $inquiry['id'] ?? 'N/A';
-    $name = $inquiry['fullName'] ?? $inquiry['full_name'] ?? 'Unknown';
-    $email = $inquiry['emailAddress'] ?? $inquiry['email_address'] ?? 'N/A';
-
-    echo "[{$num}/{$total}] Syncing REF: {$ref} ({$name} - {$email})... ";
-
-    try {
-        GoogleSheetsSyncService::syncInquiry($inquiry);
-        echo "OK\n";
-        $successCount++;
-    } catch (\Throwable $e) {
-        echo "FAILED: " . $e->getMessage() . "\n";
-        $failCount++;
-    }
-
-    // Small delay to prevent hitting Google Apps Script rate limits
-    usleep(250000); // 0.25 seconds
+try {
+    $result = GoogleSheetsSyncService::pushAllToSheets($inquiries);
+    echo "Sync Completed Successfully!\n";
+    echo "Successfully Synced: " . ($result['syncedCount'] ?? $total) . "\n";
+} catch (\Throwable $e) {
+    echo "Sync FAILED: " . $e->getMessage() . "\n";
+    exit(1);
 }
 
-echo "\n=========================================================\n";
-echo "Sync Completed!\n";
-echo "Successfully Synced: {$successCount}\n";
-echo "Failed:              {$failCount}\n";
-echo "Total Processed:     {$total}\n";
 echo "=========================================================\n";

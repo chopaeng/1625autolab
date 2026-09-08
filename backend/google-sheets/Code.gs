@@ -2,7 +2,7 @@
  * ========================================================================================
  * 1625 AUTOLAB - GOOGLE SHEETS BIDIRECTIONAL LIVE SYNC SCRIPT
  * ========================================================================================
- * Version: 2.2.0 (Intelligent Multi-Pass Row Matching & Bidirectional Two-Way Sync)
+ * Version: 2.3.0 (High-Performance In-Memory Batching & Live Sync)
  *
  * This Google Apps Script powers real-time two-way synchronization between your Google
  * Spreadsheet ('Sales' sheet) and Apollo:
@@ -437,11 +437,39 @@ function upsertInquiryRow(inquiry, isFromApi) {
     CacheService.getScriptCache().put('SUPPRESS_ON_EDIT_' + targetRow, 'true', 30);
   }
 
-  // Standardize values
+  var numCols = Math.max(sheet.getLastColumn(), COLUMNS.length, SYNC_STATUS_COL);
+  var existingRowData = isNewRow ? null : sheet.getRange(targetRow, 1, 1, numCols).getValues()[0];
+  var rowArray = buildRowArray(inquiry, colMap, numCols, existingRowData);
+
+  // Write values to target row (preserving any table validations/dropdowns)
+  sheet.getRange(targetRow, 1, 1, rowArray.length).setValues([rowArray]);
+
+  // Apply row formatting
+  var valStatus = String(inquiry.status || inquiry.Status || 'pending').toLowerCase().trim();
+  applyRowStyles(sheet, targetRow, valStatus);
+
+  var valRef = String(inquiry.referenceNumber || inquiry.reference_number || inquiry['Reference Number'] || '').trim();
+  var valId = inqId;
+
+  return {
+    success: true,
+    action: isNewRow ? 'created' : 'updated',
+    row: targetRow,
+    rowNumber: targetRow,
+    ref: valRef,
+    referenceNumber: valRef,
+    inquiryId: valId
+  };
+}
+
+/**
+ * Builds a 1D row array mapped precisely to column indices defined in colMap.
+ */
+function buildRowArray(inquiry, colMap, totalCols, existingRowValues) {
   var now = new Date();
   var valCreated = inquiry.timestamp || inquiry['Timestamp'] || inquiry.createdAt || inquiry.created_at || Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
-  var valRef = refNum;
-  var valId = inqId;
+  var valRef = String(inquiry.referenceNumber || inquiry.reference_number || inquiry['Reference Number'] || '').trim();
+  var valId = String(inquiry.id || inquiry.inquiryId || inquiry.inquiry_id || inquiry['Inquiry ID'] || '').trim();
   var valName = String(inquiry.fullName || inquiry.full_name || inquiry['Full Name'] || inquiry.customerName || '').trim();
   var valEmail = String(inquiry.emailAddress || inquiry.email_address || inquiry['Email address'] || inquiry['Email Address'] || '').trim();
   var valAddr = String(inquiry.address || inquiry.Address || '').trim();
@@ -461,66 +489,198 @@ function upsertInquiryRow(inquiry, isFromApi) {
   var valUpdated = inquiry.lastUpdated || inquiry['Last Updated'] || Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
   var valSync = '✅ Synced (Apollo)';
 
-  var rowArray = [];
-  for (var c = 0; c < COLUMNS.length; c++) {
-    var header = COLUMNS[c];
-    switch (header) {
-      case 'Timestamp': rowArray.push(valCreated); break;
-      case 'Reference Number': rowArray.push(valRef); break;
-      case 'Inquiry ID': rowArray.push(valId); break;
-      case 'Full Name': rowArray.push(valName); break;
-      case 'Email address': rowArray.push(valEmail); break;
-      case 'Address': rowArray.push(valAddr); break;
-      case 'Contact Number': rowArray.push(valPhone); break;
-      case 'Facebook Name': rowArray.push(valFb); break;
-      case 'Car Make': rowArray.push(valMake); break;
-      case 'Car Model': rowArray.push(valModel); break;
-      case 'Year Model': rowArray.push(valYear); break;
-      case 'Service Type': rowArray.push(valServiceType); break;
-      case 'Service Name': rowArray.push(valService); break;
-      case 'Product to Purchase': rowArray.push(valProduct); break;
-      case 'Plate Number': rowArray.push(valPlate); break;
-      case 'Appointment Date': rowArray.push(valDate); break;
-      case 'Appointment Time': rowArray.push(valTime); break;
-      case 'Status': rowArray.push(valStatus); break;
-      case 'Last Updated': rowArray.push(valUpdated); break;
-      default: rowArray.push(''); break;
+  var numCols = Math.max(totalCols || 0, COLUMNS.length, SYNC_STATUS_COL);
+  var row = existingRowValues ? existingRowValues.slice(0, numCols) : new Array(numCols).fill('');
+  while (row.length < numCols) {
+    row.push('');
+  }
+
+  function setField(colName, fallbackIdx, value) {
+    var colIdx = (colMap && colMap[colName]) ? colMap[colName] : fallbackIdx;
+    if (colIdx && colIdx <= row.length) {
+      row[colIdx - 1] = value;
     }
   }
 
-  // Write values to target row (preserving any table validations/dropdowns)
-  sheet.getRange(targetRow, 1, 1, rowArray.length).setValues([rowArray]);
+  setField('Timestamp', 1, valCreated);
+  setField('Reference Number', 2, valRef);
+  setField('Inquiry ID', 3, valId);
+  setField('Full Name', 4, valName);
+  setField('Email address', 5, valEmail);
+  setField('Address', 6, valAddr);
+  setField('Contact Number', 7, valPhone);
+  setField('Facebook Name', 8, valFb);
+  setField('Car Make', 9, valMake);
+  setField('Car Model', 10, valModel);
+  setField('Year Model', 11, valYear);
+  setField('Service Type', 12, valServiceType);
+  setField('Service Name', 13, valService);
+  setField('Product to Purchase', 14, valProduct);
+  setField('Plate Number', 15, valPlate);
+  setField('Appointment Date', 16, valDate);
+  setField('Appointment Time', 17, valTime);
+  setField('Status', 18, valStatus);
+  setField('Last Updated', 19, valUpdated);
 
-  // Write Sync Status separately to column AS
-  sheet.getRange(targetRow, SYNC_STATUS_COL).setValue(valSync);
+  // Set Sync Status at SYNC_STATUS_COL
+  if (SYNC_STATUS_COL <= row.length) {
+    row[SYNC_STATUS_COL - 1] = valSync;
+  }
 
-  // Apply row formatting
-  applyRowStyles(sheet, targetRow, valStatus);
-
-  return {
-    success: true,
-    action: isNewRow ? 'created' : 'updated',
-    row: targetRow,
-    rowNumber: targetRow,
-    ref: valRef,
-    referenceNumber: valRef,
-    inquiryId: valId
-  };
+  return row;
 }
 
 /**
- * Bulk sync an array of inquiries from Apollo into Google Sheets
+ * Bulk sync an array of inquiries from Apollo into Google Sheets in sub-2-second in-memory batches.
  */
 function bulkSyncRowsFromApollo(rows) {
-  var sheet = getOrCreateTargetSheet();
-  var count = 0;
-  for (var i = 0; i < rows.length; i++) {
-    upsertInquiryRow(rows[i], true);
-    count++;
+  if (!rows || !Array.isArray(rows) || rows.length === 0) {
+    return { success: true, processedCount: 0, updated: 0, created: 0 };
   }
+
+  var sheet = getOrCreateTargetSheet();
+  var colMap = getColumnMap(sheet);
+  var headerRow = getHeaderRow(sheet);
+  var startDataRow = headerRow + 1;
+  var lastRow = sheet.getLastRow();
+  var numCols = Math.max(sheet.getLastColumn(), COLUMNS.length, SYNC_STATUS_COL);
+
+  var refColIdx = colMap['Reference Number'] ? colMap['Reference Number'] - 1 : 1;
+  var idColIdx = colMap['Inquiry ID'] ? colMap['Inquiry ID'] - 1 : 2;
+  var nameColIdx = colMap['Full Name'] ? colMap['Full Name'] - 1 : 3;
+  var emailColIdx = colMap['Email address'] ? colMap['Email address'] - 1 : 4;
+  var phoneColIdx = colMap['Contact Number'] ? colMap['Contact Number'] - 1 : 6;
+  var plateColIdx = colMap['Plate Number'] ? colMap['Plate Number'] - 1 : 14;
+  var dateColIdx = colMap['Appointment Date'] ? colMap['Appointment Date'] - 1 : 15;
+  var statusColIdx = colMap['Status'] ? colMap['Status'] - 1 : 17;
+
+  var numExistingRows = lastRow >= startDataRow ? (lastRow - headerRow) : 0;
+  var existingValues = numExistingRows > 0 ? sheet.getRange(startDataRow, 1, numExistingRows, numCols).getValues() : [];
+
+  var updatedCount = 0;
+  var createdCount = 0;
+  var newRows = [];
+
+  for (var i = 0; i < rows.length; i++) {
+    var inquiry = rows[i];
+    if (!inquiry) continue;
+
+    var inqId = String(inquiry.id || inquiry.inquiryId || inquiry.inquiry_id || inquiry['Inquiry ID'] || '').trim().toLowerCase();
+    var refNum = String(inquiry.referenceNumber || inquiry.reference_number || inquiry['Reference Number'] || '').trim();
+    var targetEmail = String(inquiry.emailAddress || inquiry.email_address || inquiry['Email address'] || inquiry['Email Address'] || '').toLowerCase().trim();
+    var targetPhone = cleanDigits(inquiry.contactNumber || inquiry.contact_number || inquiry['Contact Number'] || inquiry.phone);
+    var targetPlate = cleanAlphanum(inquiry.plateNumber || inquiry.plate_number || inquiry['Plate Number']);
+    var targetName = cleanAlphanum(inquiry.fullName || inquiry.full_name || inquiry['Full Name'] || inquiry.customerName);
+    var targetDate = String(inquiry.appointmentDate || inquiry.appointment_date || inquiry['Appointment Date'] || '').trim();
+    var cleanRef = cleanAlphanum(refNum);
+
+    var matchedIdx = -1;
+
+    // PASS 1: ID or Clean Ref
+    for (var r = 0; r < existingValues.length; r++) {
+      var rowId = String(existingValues[r][idColIdx] || '').toLowerCase().trim();
+      var rowRef = cleanAlphanum(existingValues[r][refColIdx] || '');
+      var rowText = existingValues[r].join(' ').toLowerCase();
+
+      if (inqId && inqId.length >= 6) {
+        if (rowId === inqId || rowText.indexOf(inqId) !== -1) {
+          matchedIdx = r;
+          break;
+        }
+      }
+      if (cleanRef && cleanRef.length >= 6) {
+        if (rowRef === cleanRef || cleanAlphanum(rowText).indexOf(cleanRef) !== -1) {
+          matchedIdx = r;
+          break;
+        }
+      }
+    }
+
+    // PASS 2: Phone + (Plate OR Date OR Name OR Email)
+    if (matchedIdx === -1 && targetPhone && targetPhone.length >= 7) {
+      for (var r2 = 0; r2 < existingValues.length; r2++) {
+        var rowPhone = cleanDigits(existingValues[r2][phoneColIdx]);
+        if (rowPhone !== targetPhone) continue;
+
+        var rowPlate = cleanAlphanum(existingValues[r2][plateColIdx]);
+        var rowDate = String(existingValues[r2][dateColIdx] || '').trim();
+        var rowName = cleanAlphanum(existingValues[r2][nameColIdx]);
+        var rowEmail = String(existingValues[r2][emailColIdx] || '').toLowerCase().trim();
+
+        if (targetPlate && rowPlate && targetPlate === rowPlate) { matchedIdx = r2; break; }
+        if (targetDate && rowDate && (targetDate === rowDate || rowDate.indexOf(targetDate) !== -1)) { matchedIdx = r2; break; }
+        if (targetName && rowName && (targetName === rowName || rowName.indexOf(targetName) !== -1 || targetName.indexOf(rowName) !== -1)) { matchedIdx = r2; break; }
+        if (targetEmail && rowEmail && targetEmail === rowEmail) { matchedIdx = r2; break; }
+      }
+    }
+
+    // PASS 3: Plate + Date
+    if (matchedIdx === -1 && targetPlate && targetPlate.length >= 4 && targetDate) {
+      for (var r3 = 0; r3 < existingValues.length; r3++) {
+        var pPlate = cleanAlphanum(existingValues[r3][plateColIdx]);
+        var pDate = String(existingValues[r3][dateColIdx] || '').trim();
+        if (pPlate === targetPlate && (pDate === targetDate || pDate.indexOf(targetDate) !== -1)) {
+          matchedIdx = r3;
+          break;
+        }
+      }
+    }
+
+    // PASS 4: Phone alone (if unique)
+    if (matchedIdx === -1 && targetPhone && targetPhone.length >= 10) {
+      var phoneMatch = -1;
+      var phoneMatches = 0;
+      for (var r4 = 0; r4 < existingValues.length; r4++) {
+        if (cleanDigits(existingValues[r4][phoneColIdx]) === targetPhone) {
+          phoneMatches++;
+          phoneMatch = r4;
+        }
+      }
+      if (phoneMatches === 1) {
+        matchedIdx = phoneMatch;
+      }
+    }
+
+    if (matchedIdx !== -1) {
+      existingValues[matchedIdx] = buildRowArray(inquiry, colMap, numCols, existingValues[matchedIdx]);
+      updatedCount++;
+    } else {
+      newRows.push(buildRowArray(inquiry, colMap, numCols, null));
+      createdCount++;
+    }
+  }
+
+  // Combine: new rows prepended to top (under header), followed by updated existing rows
+  var combinedValues = newRows.concat(existingValues);
+  if (combinedValues.length > 0) {
+    sheet.getRange(startDataRow, 1, combinedValues.length, numCols).setValues(combinedValues);
+
+    // Batch apply status cell formatting in one single call
+    var statusBg = [];
+    var statusColors = [];
+    for (var k = 0; k < combinedValues.length; k++) {
+      var st = String(combinedValues[k][statusColIdx] || '').toLowerCase().trim();
+      if (st === 'confirmed') {
+        statusBg.push(['#dcfce7']); statusColors.push(['#166534']);
+      } else if (st === 'in_progress' || st === 'in progress') {
+        statusBg.push(['#fef3c7']); statusColors.push(['#92400e']);
+      } else if (st === 'completed') {
+        statusBg.push(['#e0e7ff']); statusColors.push(['#3730a3']);
+      } else if (st === 'cancelled') {
+        statusBg.push(['#fee2e2']); statusColors.push(['#991b1b']);
+      } else {
+        statusBg.push(['#fef9c3']); statusColors.push(['#854d0e']);
+      }
+    }
+    var statusRange = sheet.getRange(startDataRow, statusColIdx + 1, combinedValues.length, 1);
+    statusRange.setBackgrounds(statusBg).setFontColors(statusColors).setFontWeight('bold');
+  }
+
   return {
     success: true,
-    processedCount: count
+    processedCount: rows.length,
+    updated: updatedCount,
+    created: createdCount
   };
 }
 
@@ -576,13 +736,56 @@ function getAllInquiryObjects(sheet) {
   var lastRow = sheet.getLastRow();
   if (lastRow < startDataRow) return [];
 
+  var numCols = sheet.getLastColumn();
+  if (numCols < 1) return [];
+
+  var colMap = getColumnMap(sheet);
+  var numRows = lastRow - headerRow;
+  var allValues = sheet.getRange(startDataRow, 1, numRows, numCols).getValues();
+
+  function getValFromRow(rowValues, colName, fallbackColIdx) {
+    var colIdx = colMap[colName] || fallbackColIdx;
+    if (colIdx && colIdx <= rowValues.length) {
+      var v = rowValues[colIdx - 1];
+      if (v instanceof Date) {
+        return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      }
+      return (v === null || v === undefined) ? '' : String(v).trim();
+    }
+    return '';
+  }
+
   var result = [];
-  for (var r = startDataRow; r <= lastRow; r++) {
-    var obj = getRowDataObject(sheet, r);
-    if (obj.fullName || obj.contactNumber || obj.referenceNumber) {
+  for (var i = 0; i < allValues.length; i++) {
+    var rowValues = allValues[i];
+    var obj = {
+      timestamp: getValFromRow(rowValues, 'Timestamp', 1),
+      referenceNumber: getValFromRow(rowValues, 'Reference Number', 2),
+      id: getValFromRow(rowValues, 'Inquiry ID', 3),
+      inquiryId: getValFromRow(rowValues, 'Inquiry ID', 3),
+      fullName: getValFromRow(rowValues, 'Full Name', 4),
+      emailAddress: getValFromRow(rowValues, 'Email address', 5) || getValFromRow(rowValues, 'Email Address', 5),
+      address: getValFromRow(rowValues, 'Address', 6),
+      contactNumber: getValFromRow(rowValues, 'Contact Number', 7),
+      facebookName: getValFromRow(rowValues, 'Facebook Name', 8),
+      make: getValFromRow(rowValues, 'Car Make', 9) || getValFromRow(rowValues, 'Make', 9),
+      model: getValFromRow(rowValues, 'Car Model', 10) || getValFromRow(rowValues, 'Model', 10),
+      yearModel: getValFromRow(rowValues, 'Year Model', 11) || getValFromRow(rowValues, 'Year', 11),
+      serviceType: getValFromRow(rowValues, 'Service Type', 12) || getValFromRow(rowValues, 'Service Location', 12),
+      serviceName: getValFromRow(rowValues, 'Service Name', 13) || getValFromRow(rowValues, 'Service', 13),
+      productToPurchase: getValFromRow(rowValues, 'Product to Purchase', 14) || getValFromRow(rowValues, 'Product', 14),
+      plateNumber: getValFromRow(rowValues, 'Plate Number', 15) || getValFromRow(rowValues, 'Plate', 15),
+      appointmentDate: getValFromRow(rowValues, 'Appointment Date', 16),
+      appointmentTime: getValFromRow(rowValues, 'Appointment Time', 17),
+      status: getValFromRow(rowValues, 'Status', 18),
+      lastUpdated: getValFromRow(rowValues, 'Last Updated', 19)
+    };
+
+    if (obj.fullName || obj.contactNumber || obj.referenceNumber || obj.inquiryId) {
       result.push(obj);
     }
   }
+
   return result;
 }
 

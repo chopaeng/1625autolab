@@ -49,6 +49,122 @@ class GoogleSheetsSyncService
     }
 
     /**
+     * Formats an inquiry record into a complete payload with all aliases.
+     *
+     * @param array<string, mixed> $inquiry
+     * @return array<string, mixed>
+     */
+    public static function formatInquiryPayload(array $inquiry): array
+    {
+        // Resolve service name if service_id is available
+        $serviceName = '';
+        $rawServiceId = $inquiry['serviceId'] ?? $inquiry['service_id'] ?? null;
+        if ($rawServiceId !== null && DB_NAME !== '') {
+            try {
+                $stmt = Database::getInstance()->prepare('SELECT title FROM services WHERE id = :id LIMIT 1');
+                $stmt->execute([':id' => (int) $rawServiceId]);
+                if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                    $serviceName = (string) ($row['title'] ?? '');
+                }
+            } catch (\Throwable) {
+                // Ignore service lookup failure
+            }
+        }
+
+        if ($serviceName === '') {
+            $serviceName = (string) ($inquiry['serviceName'] ?? $inquiry['service_name'] ?? $inquiry['service'] ?? '');
+        }
+        if ($serviceName === '') {
+            $serviceName = (string) ($inquiry['productToPurchase'] ?? $inquiry['product_to_purchase'] ?? '');
+        }
+
+        $rawServiceType = (string) ($inquiry['serviceType'] ?? $inquiry['service_type'] ?? 'shop_visit');
+        $serviceTypeVal = (strtolower($rawServiceType) === 'home_service' || strtolower($rawServiceType) === 'home service') ? 'Home Service' : 'Shop Visit';
+        $idVal = (string) ($inquiry['id'] ?? $inquiry['inquiryId'] ?? '');
+        $refVal = (string) ($inquiry['referenceNumber'] ?? $inquiry['reference_number'] ?? '');
+        $fullNameVal = (string) ($inquiry['fullName'] ?? $inquiry['full_name'] ?? '');
+        $emailVal = (string) ($inquiry['emailAddress'] ?? $inquiry['email_address'] ?? '');
+        $addressVal = (string) ($inquiry['address'] ?? '');
+        $phoneVal = (string) ($inquiry['contactNumber'] ?? $inquiry['contact_number'] ?? '');
+        $fbVal = (string) ($inquiry['facebookName'] ?? $inquiry['facebook_name'] ?? '');
+        $makeVal = (string) ($inquiry['make'] ?? '');
+        $modelVal = (string) ($inquiry['model'] ?? '');
+        $yearVal = (string) ($inquiry['yearModel'] ?? $inquiry['year_model'] ?? $inquiry['year'] ?? '');
+        $productVal = (string) ($inquiry['productToPurchase'] ?? $inquiry['product_to_purchase'] ?? '');
+        $plateVal = (string) ($inquiry['plateNumber'] ?? $inquiry['plate_number'] ?? '');
+        $dateVal = (string) ($inquiry['appointmentDate'] ?? $inquiry['appointment_date'] ?? '');
+        $timeVal = (string) ($inquiry['appointmentTime'] ?? $inquiry['appointment_time'] ?? '');
+        $statusVal = (string) ($inquiry['status'] ?? 'pending');
+        $notesVal = (string) ($inquiry['internalNotes'] ?? $inquiry['internal_notes'] ?? '');
+        $createdVal = (string) ($inquiry['createdAt'] ?? $inquiry['created_at'] ?? date('Y-m-d H:i:s'));
+        $nowStr = date('Y-m-d H:i:s');
+
+        return [
+            // Standard camelCase keys
+            'id' => $idVal,
+            'timestamp' => $createdVal,
+            'fullName' => $fullNameVal,
+            'emailAddress' => $emailVal,
+            'address' => $addressVal,
+            'contactNumber' => $phoneVal,
+            'facebookName' => $fbVal,
+            'make' => $makeVal,
+            'model' => $modelVal,
+            'yearModel' => $yearVal,
+            'serviceType' => $serviceTypeVal,
+            'serviceName' => $serviceName,
+            'productToPurchase' => $productVal,
+            'plateNumber' => $plateVal,
+            'appointmentDate' => $dateVal,
+            'appointmentTime' => $timeVal,
+            'status' => $statusVal,
+            'internalNotes' => $notesVal,
+            'lastUpdated' => $nowStr,
+            'inquiryId' => $idVal,
+            'referenceNumber' => $refVal,
+
+            // Snake_case aliases
+            'inquiry_id' => $idVal,
+            'reference_number' => $refVal,
+            'full_name' => $fullNameVal,
+            'email_address' => $emailVal,
+            'contact_number' => $phoneVal,
+            'facebook_name' => $fbVal,
+            'year_model' => $yearVal,
+            'service_type' => $serviceTypeVal,
+            'product_to_purchase' => $productVal,
+            'plate_number' => $plateVal,
+            'appointment_date' => $dateVal,
+            'appointment_time' => $timeVal,
+            'internal_notes' => $notesVal,
+            'last_updated' => $nowStr,
+
+            // Header Name Aliases for header-matching scripts
+            'Timestamp' => $createdVal,
+            'Full Name' => $fullNameVal,
+            'Email address' => $emailVal,
+            'Address' => $addressVal,
+            'Contact Number' => $phoneVal,
+            'Facebook Name' => $fbVal,
+            'Car Make' => $makeVal,
+            'Car Model' => $modelVal,
+            'Year Model' => $yearVal,
+            'Service Type' => $serviceTypeVal,
+            'Service Location' => $serviceTypeVal,
+            'Service Name' => $serviceName,
+            'Product to Purchase' => $productVal,
+            'Plate Number' => $plateVal,
+            'Appointment Date' => $dateVal,
+            'Appointment Time' => $timeVal,
+            'Status' => $statusVal,
+            'Internal Notes' => $notesVal,
+            'Last Updated' => $nowStr,
+            'Inquiry ID' => $idVal,
+            'Reference Number' => $refVal,
+        ];
+    }
+
+    /**
      * Sends inquiry data to the Google Sheets Webhook URL if configured.
      *
      * @param array<string, mixed> $inquiry
@@ -74,113 +190,7 @@ class GoogleSheetsSyncService
                 return;
             }
 
-            // Resolve service name if service_id is available
-            $serviceName = '';
-            $rawServiceId = $inquiry['serviceId'] ?? $inquiry['service_id'] ?? null;
-            if ($rawServiceId !== null && DB_NAME !== '') {
-                try {
-                    $stmt = Database::getInstance()->prepare('SELECT title FROM services WHERE id = :id LIMIT 1');
-                    $stmt->execute([':id' => (int) $rawServiceId]);
-                    if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                        $serviceName = (string) ($row['title'] ?? '');
-                    }
-                } catch (\Throwable) {
-                    // Ignore service lookup failure
-                }
-            }
-
-            if ($serviceName === '') {
-                $serviceName = (string) ($inquiry['serviceName'] ?? $inquiry['service_name'] ?? $inquiry['service'] ?? '');
-            }
-            if ($serviceName === '') {
-                $serviceName = (string) ($inquiry['productToPurchase'] ?? $inquiry['product_to_purchase'] ?? '');
-            }
-
-            $rawServiceType = (string) ($inquiry['serviceType'] ?? $inquiry['service_type'] ?? 'shop_visit');
-            $serviceTypeVal = (strtolower($rawServiceType) === 'home_service' || strtolower($rawServiceType) === 'home service') ? 'Home Service' : 'Shop Visit';
-            $idVal = (string) ($inquiry['id'] ?? $inquiry['inquiryId'] ?? '');
-            $refVal = (string) ($inquiry['referenceNumber'] ?? $inquiry['reference_number'] ?? '');
-            $fullNameVal = (string) ($inquiry['fullName'] ?? $inquiry['full_name'] ?? '');
-            $emailVal = (string) ($inquiry['emailAddress'] ?? $inquiry['email_address'] ?? '');
-            $addressVal = (string) ($inquiry['address'] ?? '');
-            $phoneVal = (string) ($inquiry['contactNumber'] ?? $inquiry['contact_number'] ?? '');
-            $fbVal = (string) ($inquiry['facebookName'] ?? $inquiry['facebook_name'] ?? '');
-            $makeVal = (string) ($inquiry['make'] ?? '');
-            $modelVal = (string) ($inquiry['model'] ?? '');
-            $yearVal = (string) ($inquiry['yearModel'] ?? $inquiry['year_model'] ?? $inquiry['year'] ?? '');
-            $productVal = (string) ($inquiry['productToPurchase'] ?? $inquiry['product_to_purchase'] ?? '');
-            $plateVal = (string) ($inquiry['plateNumber'] ?? $inquiry['plate_number'] ?? '');
-            $dateVal = (string) ($inquiry['appointmentDate'] ?? $inquiry['appointment_date'] ?? '');
-            $timeVal = (string) ($inquiry['appointmentTime'] ?? $inquiry['appointment_time'] ?? '');
-            $statusVal = (string) ($inquiry['status'] ?? 'pending');
-            $notesVal = (string) ($inquiry['internalNotes'] ?? $inquiry['internal_notes'] ?? '');
-            $createdVal = (string) ($inquiry['createdAt'] ?? $inquiry['created_at'] ?? date('Y-m-d H:i:s'));
-            $nowStr = date('Y-m-d H:i:s');
-
-            $payload = [
-                // Standard camelCase keys
-                'id' => $idVal,
-                'timestamp' => $createdVal,
-                'fullName' => $fullNameVal,
-                'emailAddress' => $emailVal,
-                'address' => $addressVal,
-                'contactNumber' => $phoneVal,
-                'facebookName' => $fbVal,
-                'make' => $makeVal,
-                'model' => $modelVal,
-                'yearModel' => $yearVal,
-                'serviceType' => $serviceTypeVal,
-                'serviceName' => $serviceName,
-                'productToPurchase' => $productVal,
-                'plateNumber' => $plateVal,
-                'appointmentDate' => $dateVal,
-                'appointmentTime' => $timeVal,
-                'status' => $statusVal,
-                'internalNotes' => $notesVal,
-                'lastUpdated' => $nowStr,
-                'inquiryId' => $idVal,
-                'referenceNumber' => $refVal,
-
-                // Snake_case aliases
-                'inquiry_id' => $idVal,
-                'reference_number' => $refVal,
-                'full_name' => $fullNameVal,
-                'email_address' => $emailVal,
-                'contact_number' => $phoneVal,
-                'facebook_name' => $fbVal,
-                'year_model' => $yearVal,
-                'service_type' => $serviceTypeVal,
-                'product_to_purchase' => $productVal,
-                'plate_number' => $plateVal,
-                'appointment_date' => $dateVal,
-                'appointment_time' => $timeVal,
-                'internal_notes' => $notesVal,
-                'last_updated' => $nowStr,
-
-                // Header Name Aliases for header-matching scripts
-                'Timestamp' => $createdVal,
-                'Full Name' => $fullNameVal,
-                'Email address' => $emailVal,
-                'Address' => $addressVal,
-                'Contact Number' => $phoneVal,
-                'Facebook Name' => $fbVal,
-                'Car Make' => $makeVal,
-                'Car Model' => $modelVal,
-                'Year Model' => $yearVal,
-                'Service Type' => $serviceTypeVal,
-                'Service Location' => $serviceTypeVal,
-                'Service Name' => $serviceName,
-                'Product to Purchase' => $productVal,
-                'Plate Number' => $plateVal,
-                'Appointment Date' => $dateVal,
-                'Appointment Time' => $timeVal,
-                'Status' => $statusVal,
-                'Internal Notes' => $notesVal,
-                'Last Updated' => $nowStr,
-                'Inquiry ID' => $idVal,
-                'Reference Number' => $refVal,
-            ];
-
+            $payload = self::formatInquiryPayload($inquiry);
             $jsonPayload = json_encode($payload, JSON_UNESCAPED_UNICODE);
 
             $ch = curl_init();
@@ -195,7 +205,7 @@ class GoogleSheetsSyncService
                 CURLOPT_HTTPHEADER => [
                     'Content-Type: application/json; charset=utf-8',
                 ],
-                CURLOPT_TIMEOUT => 15,
+                CURLOPT_TIMEOUT => 25,
                 CURLOPT_SSL_VERIFYPEER => false,
             ]);
 
@@ -212,6 +222,97 @@ class GoogleSheetsSyncService
         } catch (\Throwable $e) {
             error_log('[GoogleSheetsSyncService] Outbound Webhook failed: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Pushes all inquiries in a single batch request to Google Sheets.
+     *
+     * @param array<int, array<string, mixed>> $inquiries
+     * @return array{success: bool, syncedCount: int, error?: string}
+     */
+    public static function pushAllToSheets(array $inquiries): array
+    {
+        @set_time_limit(180);
+
+        if (self::$syncDisabled) {
+            return ['success' => true, 'syncedCount' => 0];
+        }
+
+        $settings = (new SiteSettingsService())->getAll();
+        $syncEnabled = ($settings['google_sheets_sync_enabled'] ?? '1') !== '0';
+        $outboundEnabled = ($settings['google_sheets_outbound_enabled'] ?? '1') !== '0';
+        if (!$syncEnabled || !$outboundEnabled) {
+            return ['success' => true, 'syncedCount' => 0];
+        }
+
+        $webhookUrl = trim((string) ($settings['google_sheets_webhook_url'] ?? ''));
+        if ($webhookUrl === '') {
+            throw new RuntimeException('Google Sheets Webhook URL is not configured.', 422);
+        }
+
+        $rows = [];
+        foreach ($inquiries as $inquiry) {
+            $rows[] = self::formatInquiryPayload($inquiry);
+        }
+
+        $chunks = array_chunk($rows, 4);
+        $totalSynced = 0;
+        $lastResponse = null;
+
+        foreach ($chunks as $chunk) {
+            $payload = [
+                'action' => 'sync_all',
+                'rows' => $chunk,
+            ];
+
+            $jsonPayload = json_encode($payload, JSON_UNESCAPED_UNICODE);
+
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $webhookUrl,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => $jsonPayload,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+                CURLOPT_MAXREDIRS => 5,
+                CURLOPT_HTTPHEADER => [
+                    'Content-Type: application/json; charset=utf-8',
+                ],
+                CURLOPT_TIMEOUT => 30,
+                CURLOPT_SSL_VERIFYPEER => false,
+            ]);
+
+            $response = curl_exec($ch);
+            $curlError = curl_error($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if ($curlError !== '') {
+                error_log('[GoogleSheetsSyncService] pushAllToSheets cURL error: ' . $curlError);
+                throw new RuntimeException('Failed to push to Google Sheets: ' . $curlError, 502);
+            }
+
+            $resData = json_decode((string) $response, true);
+            if ($httpCode < 200 || $httpCode >= 400 || (is_array($resData) && ($resData['success'] ?? null) === false)) {
+                $err = is_array($resData) ? ($resData['error'] ?? 'Google Sheets rejected sync.') : "HTTP {$httpCode}";
+                throw new RuntimeException('Google Sheets push error: ' . $err, 502);
+            }
+
+            $totalSynced += count($chunk);
+            $lastResponse = $resData;
+        }
+
+        $nowStr = date('Y-m-d H:i:s');
+        (new SiteSettingsService())->update([
+            'google_sheets_last_sync_at' => $nowStr,
+        ]);
+
+        return [
+            'success' => true,
+            'syncedCount' => $totalSynced,
+            'response' => $lastResponse,
+        ];
     }
 
     /**

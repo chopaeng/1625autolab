@@ -199,7 +199,7 @@ class SiteSettingsService
             'staff_can_manage_all_bookings' => '0',
             'disable_registration' => '0',
             'shop_enabled' => '1',
-            'google_sheets_webhook_url' => '',
+            'google_sheets_webhook_url' => 'https://script.google.com/macros/s/AKfycbxgwLpuVCHKIqTTnOukQRWaPNJgcoUVVLHGh1KDf9hDx1nKrEdwj3iJB49cUvPp6PErrg/exec',
             'google_sheets_sync_enabled' => '1',
             'google_sheets_outbound_enabled' => '1',
             'google_sheets_bidirectional_enabled' => '1',

@@ -2180,13 +2180,16 @@ class Router
         if (($auth['role'] ?? '') === 'client') {
             throw new RuntimeException('Permission denied.', 403);
         }
+
+        @set_time_limit(180);
+
         $inquiries = (new InquiryService())->getAll();
-        $synced = 0;
-        foreach ($inquiries as $inquiry) {
-            GoogleSheetsSyncService::syncInquiry($inquiry);
-            $synced++;
-        }
-        echo json_encode(['success' => true, 'syncedCount' => $synced]);
+        $result = GoogleSheetsSyncService::pushAllToSheets($inquiries);
+
+        echo json_encode([
+            'success' => true,
+            'syncedCount' => $result['syncedCount'] ?? count($inquiries),
+        ]);
     }
 
     /** @param array<string, string> $vars */
