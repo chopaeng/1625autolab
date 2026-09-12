@@ -721,13 +721,11 @@ class InquiryService
         $rawEmail = strtolower(trim((string) ($criteria['emailAddress'] ?? $criteria['email_address'] ?? $criteria['email'] ?? '')));
         $rawName = trim((string) ($criteria['fullName'] ?? $criteria['full_name'] ?? $criteria['name'] ?? ''));
 
-        // 1. Primary: By exact or normalized ID / Reference Number
+        // 1. Primary: By exact Inquiry ID.
+        // Reference Number is intentionally excluded — it changes on every reschedule,
+        // so using it as a lookup key causes duplicate inquiries after rebooking.
         if ($id !== '') {
             $found = $this->getById($id);
-            if ($found !== null) return $found;
-        }
-        if ($ref !== '') {
-            $found = $this->getById($ref);
             if ($found !== null) return $found;
         }
 

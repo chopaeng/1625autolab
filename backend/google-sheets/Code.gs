@@ -109,7 +109,7 @@ function cleanAlphanum(val) {
 function doPost(e) {
   var lock = LockService.getScriptLock();
   try {
-    lock.waitLock(15000);
+    lock.waitLock(30000); // 30 s — bulk payloads can take longer to process
   } catch (err) {
     return ContentService.createTextOutput(JSON.stringify({
       success: false,
@@ -163,7 +163,7 @@ function doGet(e) {
     return ContentService.createTextOutput(JSON.stringify({
       status: 'ok',
       timestamp: new Date().toISOString(),
-      scriptName: '1625 AutoLab Live Sync v2.2.0'
+      scriptName: '1625 AutoLab Live Sync v2.3.1'
     })).setMimeType(ContentService.MimeType.JSON);
   }
 
@@ -341,23 +341,13 @@ function upsertInquiryRow(inquiry, isFromApi) {
     var plateColIdx = colMap['Plate Number'] ? colMap['Plate Number'] - 1 : 14;
     var dateColIdx = colMap['Appointment Date'] ? colMap['Appointment Date'] - 1 : 15;
 
-    // PASS 1: Exact or normalized Inquiry ID or Reference Number (Strongest Match)
-    for (var i = 0; i < values.length; i++) {
-      var rowId = String(values[i][idColIdx] || '').toLowerCase().trim();
-      var rowRef = cleanAlphanum(values[i][refColIdx] || '');
-      var rowText = values[i].join(' ').toLowerCase();
-
-      // Check Inquiry ID against ID column or full row
-      if (inqId && inqId.length >= 6) {
-        if (rowId === inqId || rowText.indexOf(inqId) !== -1) {
-          targetRow = startDataRow + i;
-          break;
-        }
-      }
-
-      // Check Reference Number (ignoring dashes, underscores, spaces)
-      if (cleanRef && cleanRef.length >= 6) {
-        if (rowRef === cleanRef || cleanAlphanum(rowText).indexOf(cleanRef) !== -1) {
+    // PASS 1: Exact Inquiry ID only (strongest / most stable key).
+    // Reference Number is intentionally excluded here — it changes on every
+    // reschedule, so matching by it would create duplicate rows after a rebooking.
+    if (inqId && inqId.length >= 6) {
+      for (var i = 0; i < values.length; i++) {
+        var rowId = String(values[i][idColIdx] || '').toLowerCase().trim();
+        if (rowId === inqId) {
           targetRow = startDataRow + i;
           break;
         }
@@ -548,17 +538,53 @@ function bulkSyncRowsFromApollo(rows) {
   var lastRow = sheet.getLastRow();
   var numCols = Math.max(sheet.getLastColumn(), COLUMNS.length, SYNC_STATUS_COL);
 
-  var refColIdx = colMap['Reference Number'] ? colMap['Reference Number'] - 1 : 1;
-  var idColIdx = colMap['Inquiry ID'] ? colMap['Inquiry ID'] - 1 : 2;
-  var nameColIdx = colMap['Full Name'] ? colMap['Full Name'] - 1 : 3;
-  var emailColIdx = colMap['Email address'] ? colMap['Email address'] - 1 : 4;
-  var phoneColIdx = colMap['Contact Number'] ? colMap['Contact Number'] - 1 : 6;
-  var plateColIdx = colMap['Plate Number'] ? colMap['Plate Number'] - 1 : 14;
-  var dateColIdx = colMap['Appointment Date'] ? colMap['Appointment Date'] - 1 : 15;
-  var statusColIdx = colMap['Status'] ? colMap['Status'] - 1 : 17;
+  var refColIdx    = colMap['Reference Number']  ? colMap['Reference Number']  - 1 : 1;
+  var idColIdx     = colMap['Inquiry ID']         ? colMap['Inquiry ID']         - 1 : 2;
+  var nameColIdx   = colMap['Full Name']          ? colMap['Full Name']          - 1 : 3;
+  var emailColIdx  = colMap['Email address']      ? colMap['Email address']      - 1 : 4;
+  var phoneColIdx  = colMap['Contact Number']     ? colMap['Contact Number']     - 1 : 6;
+  var plateColIdx  = colMap['Plate Number']       ? colMap['Plate Number']       - 1 : 14;
+  var dateColIdx   = colMap['Appointment Date']   ? colMap['Appointment Date']   - 1 : 15;
+  var statusColIdx = colMap['Status']             ? colMap['Status']             - 1 : 17;
 
   var numExistingRows = lastRow >= startDataRow ? (lastRow - headerRow) : 0;
-  var existingValues = numExistingRows > 0 ? sheet.getRange(startDataRow, 1, numExistingRows, numCols).getValues() : [];
+  var existingValues  = numExistingRows > 0
+    ? sheet.getRange(startDataRow, 1, numExistingRows, numCols).getValues()
+    : [];
+
+  // ── Pre-build hash-map indexes for O(1) matching ──────────────────────────
+  // Reference Number is excluded from the index intentionally — it changes
+  // on every reschedule, so using it as a match key creates duplicate rows.
+  // Inquiry ID is the sole primary key.
+  var idxById        = {};  // normalized inquiry ID → array index
+  var idxByPhone     = {};  // 10-digit phone → [array indices]  (may be non-unique)
+  var idxByPlateDate = {};  // plate+date → array index
+  var idxByEmail     = {};  // email → array index
+  var idxByPhoneName = {};  // phone+secondary → array index
+
+  for (var ei = 0; ei < existingValues.length; ei++) {
+    var eRow = existingValues[ei];
+
+    var eId    = String(eRow[idColIdx]    || '').toLowerCase().trim();
+    var ePhone = cleanDigits(eRow[phoneColIdx]    || '');
+    var ePlate = cleanAlphanum(eRow[plateColIdx]  || '');
+    var eDate  = String(eRow[dateColIdx]  || '').trim();
+    var eName  = cleanAlphanum(eRow[nameColIdx]   || '');
+    var eEmail = String(eRow[emailColIdx] || '').toLowerCase().trim();
+
+    if (eId && eId.length >= 6) { idxById[eId] = ei; }
+    if (eEmail) { idxByEmail[eEmail] = ei; }
+    if (ePlate && eDate) { idxByPlateDate[ePlate + '_' + eDate] = ei; }
+    if (ePhone && ePhone.length >= 7) {
+      if (!idxByPhone[ePhone]) { idxByPhone[ePhone] = []; }
+      idxByPhone[ePhone].push(ei);
+      if (eName)  { idxByPhoneName[ePhone + '_' + eName]           = ei; }
+      if (eEmail) { idxByPhoneName[ePhone + '_email_' + eEmail]    = ei; }
+      if (ePlate) { idxByPhoneName[ePhone + '_plate_' + ePlate]    = ei; }
+      if (eDate)  { idxByPhoneName[ePhone + '_date_'  + eDate]     = ei; }
+    }
+  }
+  // ──────────────────────────────────────────────────────────────────────────
 
   var updatedCount = 0;
   var createdCount = 0;
@@ -568,80 +594,56 @@ function bulkSyncRowsFromApollo(rows) {
     var inquiry = rows[i];
     if (!inquiry) continue;
 
-    var inqId = String(inquiry.id || inquiry.inquiryId || inquiry.inquiry_id || inquiry['Inquiry ID'] || '').trim().toLowerCase();
-    var refNum = String(inquiry.referenceNumber || inquiry.reference_number || inquiry['Reference Number'] || '').trim();
+    var inqId       = String(inquiry.id || inquiry.inquiryId || inquiry.inquiry_id || inquiry['Inquiry ID'] || '').trim().toLowerCase();
+    var refNum      = String(inquiry.referenceNumber || inquiry.reference_number || inquiry['Reference Number'] || '').trim();
     var targetEmail = String(inquiry.emailAddress || inquiry.email_address || inquiry['Email address'] || inquiry['Email Address'] || '').toLowerCase().trim();
     var targetPhone = cleanDigits(inquiry.contactNumber || inquiry.contact_number || inquiry['Contact Number'] || inquiry.phone);
     var targetPlate = cleanAlphanum(inquiry.plateNumber || inquiry.plate_number || inquiry['Plate Number']);
-    var targetName = cleanAlphanum(inquiry.fullName || inquiry.full_name || inquiry['Full Name'] || inquiry.customerName);
-    var targetDate = String(inquiry.appointmentDate || inquiry.appointment_date || inquiry['Appointment Date'] || '').trim();
-    var cleanRef = cleanAlphanum(refNum);
+    var targetName  = cleanAlphanum(inquiry.fullName || inquiry.full_name || inquiry['Full Name'] || inquiry.customerName);
+    var targetDate  = String(inquiry.appointmentDate || inquiry.appointment_date || inquiry['Appointment Date'] || '').trim();
+    var cleanRef    = cleanAlphanum(refNum);
 
     var matchedIdx = -1;
 
-    // PASS 1: ID or Clean Ref
-    for (var r = 0; r < existingValues.length; r++) {
-      var rowId = String(existingValues[r][idColIdx] || '').toLowerCase().trim();
-      var rowRef = cleanAlphanum(existingValues[r][refColIdx] || '');
-      var rowText = existingValues[r].join(' ').toLowerCase();
-
-      if (inqId && inqId.length >= 6) {
-        if (rowId === inqId || rowText.indexOf(inqId) !== -1) {
-          matchedIdx = r;
-          break;
-        }
-      }
-      if (cleanRef && cleanRef.length >= 6) {
-        if (rowRef === cleanRef || cleanAlphanum(rowText).indexOf(cleanRef) !== -1) {
-          matchedIdx = r;
-          break;
-        }
-      }
+    // PASS 1: Inquiry ID only (sole stable primary key).
+    // Reference Number is excluded — it changes on reschedule, which would
+    // cause a missed match and insert a duplicate row instead of updating.
+    if (matchedIdx === -1 && inqId && inqId.length >= 6 && idxById[inqId] !== undefined) {
+      matchedIdx = idxById[inqId];
     }
 
-    // PASS 2: Phone + (Plate OR Date OR Name OR Email)
+    // PASS 2: Phone + (Plate | Date | Name | Email)
     if (matchedIdx === -1 && targetPhone && targetPhone.length >= 7) {
-      for (var r2 = 0; r2 < existingValues.length; r2++) {
-        var rowPhone = cleanDigits(existingValues[r2][phoneColIdx]);
-        if (rowPhone !== targetPhone) continue;
-
-        var rowPlate = cleanAlphanum(existingValues[r2][plateColIdx]);
-        var rowDate = String(existingValues[r2][dateColIdx] || '').trim();
-        var rowName = cleanAlphanum(existingValues[r2][nameColIdx]);
-        var rowEmail = String(existingValues[r2][emailColIdx] || '').toLowerCase().trim();
-
-        if (targetPlate && rowPlate && targetPlate === rowPlate) { matchedIdx = r2; break; }
-        if (targetDate && rowDate && (targetDate === rowDate || rowDate.indexOf(targetDate) !== -1)) { matchedIdx = r2; break; }
-        if (targetName && rowName && (targetName === rowName || rowName.indexOf(targetName) !== -1 || targetName.indexOf(rowName) !== -1)) { matchedIdx = r2; break; }
-        if (targetEmail && rowEmail && targetEmail === rowEmail) { matchedIdx = r2; break; }
+      if (targetPlate && idxByPhoneName[targetPhone + '_plate_' + targetPlate] !== undefined) {
+        matchedIdx = idxByPhoneName[targetPhone + '_plate_' + targetPlate];
+      } else if (targetDate && idxByPhoneName[targetPhone + '_date_' + targetDate] !== undefined) {
+        matchedIdx = idxByPhoneName[targetPhone + '_date_' + targetDate];
+      } else if (targetName && idxByPhoneName[targetPhone + '_' + targetName] !== undefined) {
+        matchedIdx = idxByPhoneName[targetPhone + '_' + targetName];
+      } else if (targetEmail && idxByPhoneName[targetPhone + '_email_' + targetEmail] !== undefined) {
+        matchedIdx = idxByPhoneName[targetPhone + '_email_' + targetEmail];
       }
     }
 
     // PASS 3: Plate + Date
     if (matchedIdx === -1 && targetPlate && targetPlate.length >= 4 && targetDate) {
-      for (var r3 = 0; r3 < existingValues.length; r3++) {
-        var pPlate = cleanAlphanum(existingValues[r3][plateColIdx]);
-        var pDate = String(existingValues[r3][dateColIdx] || '').trim();
-        if (pPlate === targetPlate && (pDate === targetDate || pDate.indexOf(targetDate) !== -1)) {
-          matchedIdx = r3;
-          break;
-        }
+      var pdKey = targetPlate + '_' + targetDate;
+      if (idxByPlateDate[pdKey] !== undefined) {
+        matchedIdx = idxByPlateDate[pdKey];
       }
     }
 
-    // PASS 4: Phone alone (if unique)
+    // PASS 4: Phone alone (only if unique in the sheet)
     if (matchedIdx === -1 && targetPhone && targetPhone.length >= 10) {
-      var phoneMatch = -1;
-      var phoneMatches = 0;
-      for (var r4 = 0; r4 < existingValues.length; r4++) {
-        if (cleanDigits(existingValues[r4][phoneColIdx]) === targetPhone) {
-          phoneMatches++;
-          phoneMatch = r4;
-        }
+      var phoneMatches = idxByPhone[targetPhone] || [];
+      if (phoneMatches.length === 1) {
+        matchedIdx = phoneMatches[0];
       }
-      if (phoneMatches === 1) {
-        matchedIdx = phoneMatch;
-      }
+    }
+
+    // PASS 5: Email alone (if no phone match)
+    if (matchedIdx === -1 && targetEmail && idxByEmail[targetEmail] !== undefined) {
+      matchedIdx = idxByEmail[targetEmail];
     }
 
     if (matchedIdx !== -1) {
@@ -659,7 +661,7 @@ function bulkSyncRowsFromApollo(rows) {
     sheet.getRange(startDataRow, 1, combinedValues.length, numCols).setValues(combinedValues);
 
     // Batch apply status cell formatting in one single call
-    var statusBg = [];
+    var statusBg     = [];
     var statusColors = [];
     for (var k = 0; k < combinedValues.length; k++) {
       var st = String(combinedValues[k][statusColIdx] || '').toLowerCase().trim();
@@ -722,9 +724,9 @@ function getRowDataObject(sheet, rowNumber) {
     make: getVal('Car Make', 9) || getVal('Make', 9),
     model: getVal('Car Model', 10) || getVal('Model', 10),
     yearModel: getVal('Year Model', 11) || getVal('Year', 11),
-    serviceType: getVal('Service Type', 12) || getVal('Service Location', 12),
-    serviceName: getVal('Service Name', 13) || getVal('Service', 13),
-    productToPurchase: getVal('Product to Purchase', 14) || getVal('Product', 14),
+    serviceName: getVal('Service Name', 12) || getVal('Service', 12),
+    productToPurchase: getVal('Product to Purchase', 13) || getVal('Product', 13),
+    serviceType: getVal('Service Type', 14) || getVal('Service Location', 14),
     plateNumber: getVal('Plate Number', 15) || getVal('Plate', 15),
     appointmentDate: getVal('Appointment Date', 16),
     appointmentTime: getVal('Appointment Time', 17),
@@ -774,9 +776,9 @@ function getAllInquiryObjects(sheet) {
       make: getValFromRow(rowValues, 'Car Make', 9) || getValFromRow(rowValues, 'Make', 9),
       model: getValFromRow(rowValues, 'Car Model', 10) || getValFromRow(rowValues, 'Model', 10),
       yearModel: getValFromRow(rowValues, 'Year Model', 11) || getValFromRow(rowValues, 'Year', 11),
-      serviceType: getValFromRow(rowValues, 'Service Type', 12) || getValFromRow(rowValues, 'Service Location', 12),
-      serviceName: getValFromRow(rowValues, 'Service Name', 13) || getValFromRow(rowValues, 'Service', 13),
-      productToPurchase: getValFromRow(rowValues, 'Product to Purchase', 14) || getValFromRow(rowValues, 'Product', 14),
+      serviceName: getValFromRow(rowValues, 'Service Name', 12) || getValFromRow(rowValues, 'Service', 12),
+      productToPurchase: getValFromRow(rowValues, 'Product to Purchase', 13) || getValFromRow(rowValues, 'Product', 13),
+      serviceType: getValFromRow(rowValues, 'Service Type', 14) || getValFromRow(rowValues, 'Service Location', 14),
       plateNumber: getValFromRow(rowValues, 'Plate Number', 15) || getValFromRow(rowValues, 'Plate', 15),
       appointmentDate: getValFromRow(rowValues, 'Appointment Date', 16),
       appointmentTime: getValFromRow(rowValues, 'Appointment Time', 17),

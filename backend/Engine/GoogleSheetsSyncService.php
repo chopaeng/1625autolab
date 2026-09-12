@@ -218,6 +218,9 @@ class GoogleSheetsSyncService
                 flush();
             }
             // ── Background: now call the Sheets webhook ─────────────────────
+            // The browser already received its response; use a tight timeout
+            // (12 s connect + 12 s total) so we never stall a PHP worker for
+            // 30 s if Google Apps Script is slow or unreachable.
 
             $ch = curl_init();
             curl_setopt_array($ch, [
@@ -231,9 +234,8 @@ class GoogleSheetsSyncService
                 CURLOPT_HTTPHEADER     => [
                     'Content-Type: application/json; charset=utf-8',
                 ],
-                // Reduced from 25 s — the customer has already received their
-                // response, so a shorter timeout is fine here.
-                CURLOPT_TIMEOUT        => 30,
+                CURLOPT_CONNECTTIMEOUT => 8,   // fail fast if GAS is unreachable
+                CURLOPT_TIMEOUT        => 12,  // browser is already gone; don't hog worker
                 CURLOPT_SSL_VERIFYPEER => false,
             ]);
 
@@ -260,7 +262,8 @@ class GoogleSheetsSyncService
      */
     public static function pushAllToSheets(array $inquiries): array
     {
-        @set_time_limit(180);
+        // Allow up to 5 min for large datasets; GAS itself is capped at ~6 min.
+        @set_time_limit(300);
 
         if (self::$syncDisabled) {
             return ['success' => true, 'syncedCount' => 0];
@@ -283,48 +286,65 @@ class GoogleSheetsSyncService
             $rows[] = self::formatInquiryPayload($inquiry);
         }
 
-        $chunks = array_chunk($rows, 4);
+        $totalCount  = count($rows);
         $totalSynced = 0;
         $lastResponse = null;
+        $errors = [];
 
-        foreach ($chunks as $chunk) {
+        // ── Send in chunks of 100 rows per request ────────────────────────
+        // GAS bulkSyncRowsFromApollo processes everything in memory, so large
+        // chunks are fast.  Chunking at 100 keeps individual payloads small
+        // enough to stay within GAS's 50 MB URL-fetch limit while reducing
+        // round-trips from potentially 25+ (old chunk=4) down to 1–2.
+        $chunks = array_chunk($rows, 100);
+
+        foreach ($chunks as $chunkIndex => $chunk) {
             $payload = [
                 'action' => 'sync_all',
-                'rows' => $chunk,
+                'rows'   => $chunk,
             ];
 
             $jsonPayload = json_encode($payload, JSON_UNESCAPED_UNICODE);
 
             $ch = curl_init();
             curl_setopt_array($ch, [
-                CURLOPT_URL => $webhookUrl,
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => $jsonPayload,
+                CURLOPT_URL            => $webhookUrl,
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => $jsonPayload,
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-                CURLOPT_MAXREDIRS => 5,
-                CURLOPT_HTTPHEADER => [
+                CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
+                CURLOPT_MAXREDIRS      => 5,
+                CURLOPT_HTTPHEADER     => [
                     'Content-Type: application/json; charset=utf-8',
                 ],
-                CURLOPT_TIMEOUT => 30,
+                CURLOPT_CONNECTTIMEOUT => 10,
+                // GAS execution limit is ~6 min; give each chunk up to 55 s
+                // (well under GAS limit, and avoids PHP / nginx timeouts).
+                CURLOPT_TIMEOUT        => 55,
                 CURLOPT_SSL_VERIFYPEER => false,
             ]);
 
-            $response = curl_exec($ch);
+            $response  = curl_exec($ch);
             $curlError = curl_error($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             curl_close($ch);
 
             if ($curlError !== '') {
-                error_log('[GoogleSheetsSyncService] pushAllToSheets cURL error: ' . $curlError);
-                throw new RuntimeException('Failed to push to Google Sheets: ' . $curlError, 502);
+                $msg = "Chunk " . ($chunkIndex + 1) . "/" . count($chunks) . " cURL error: {$curlError}";
+                error_log('[GoogleSheetsSyncService] pushAllToSheets ' . $msg);
+                $errors[] = $msg;
+                // Continue with remaining chunks rather than aborting entirely
+                continue;
             }
 
             $resData = json_decode((string) $response, true);
             if ($httpCode < 200 || $httpCode >= 400 || (is_array($resData) && ($resData['success'] ?? null) === false)) {
                 $err = is_array($resData) ? ($resData['error'] ?? 'Google Sheets rejected sync.') : "HTTP {$httpCode}";
-                throw new RuntimeException('Google Sheets push error: ' . $err, 502);
+                $msg = "Chunk " . ($chunkIndex + 1) . "/" . count($chunks) . ": {$err}";
+                error_log('[GoogleSheetsSyncService] pushAllToSheets error — ' . $msg);
+                $errors[] = $msg;
+                continue;
             }
 
             $totalSynced += count($chunk);
@@ -336,10 +356,16 @@ class GoogleSheetsSyncService
             'google_sheets_last_sync_at' => $nowStr,
         ]);
 
+        if (!empty($errors) && $totalSynced === 0) {
+            throw new RuntimeException('Google Sheets push failed: ' . implode('; ', $errors), 502);
+        }
+
         return [
-            'success' => true,
-            'syncedCount' => $totalSynced,
-            'response' => $lastResponse,
+            'success'      => true,
+            'syncedCount'  => $totalSynced,
+            'totalCount'   => $totalCount,
+            'errors'       => $errors,
+            'response'     => $lastResponse,
         ];
     }
 
@@ -448,13 +474,14 @@ class GoogleSheetsSyncService
 
         $inquirySvc = new InquiryService();
         $existing = $inquirySvc->findMatchingInquiry([
-            'id' => $id,
-            'referenceNumber' => $ref,
+            'id'            => $id,
+            // referenceNumber intentionally omitted: it changes on every reschedule,
+            // so using it as a match key would create duplicate inquiries after rebooking.
             'contactNumber' => $normalizedPhone !== '' ? $normalizedPhone : $phone,
-            'plateNumber' => $plate,
+            'plateNumber'   => $plate,
             'appointmentDate' => $appDate,
-            'emailAddress' => $email,
-            'fullName' => $fullName,
+            'emailAddress'  => $email,
+            'fullName'      => $fullName,
         ]);
 
         // Suppress outbound sync while updating/inserting to prevent sync echo loops
