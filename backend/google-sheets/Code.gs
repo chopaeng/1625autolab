@@ -2,7 +2,7 @@
  * ========================================================================================
  * 1625 AUTOLAB - GOOGLE SHEETS BIDIRECTIONAL LIVE SYNC SCRIPT
  * ========================================================================================
- * Version: 2.3.0 (High-Performance In-Memory Batching & Live Sync)
+ * Version: 2.3.1 (Column order fix: Service Name col 12, Product col 13, Service Type col 14)
  *
  * This Google Apps Script powers real-time two-way synchronization between your Google
  * Spreadsheet ('Sales' sheet) and Apollo:
@@ -37,26 +37,28 @@ var CONFIG = {
 };
 
 // Standard Column definitions matching your 'Sales' sheet order:
+// NOTE: Column order MUST match the actual Google Sheet header row exactly.
+// If you reorder columns in the sheet, update this array to match.
 var COLUMNS = [
-  'Timestamp',           // Col 1 (A)
-  'Reference Number',   // Col 2 (B)
-  'Inquiry ID',         // Col 3 (C)
-  'Full Name',          // Col 4 (D)
-  'Email address',      // Col 5 (E)
-  'Address',            // Col 6 (F)
-  'Contact Number',     // Col 7 (G)
-  'Facebook Name',      // Col 8 (H)
-  'Car Make',           // Col 9 (I)
-  'Car Model',          // Col 10 (J)
-  'Year Model',         // Col 11 (K)
-  'Service Type',       // Col 12 (L)
-  'Service Name',       // Col 13 (M)
-  'Product to Purchase',// Col 14 (N)
-  'Plate Number',       // Col 15 (O)
-  'Appointment Date',   // Col 16 (P)
-  'Appointment Time',   // Col 17 (Q)
-  'Status',             // Col 18 (R)
-  'Last Updated',       // Col 19 (S)
+  'Timestamp',           // Col 1  (A)
+  'Reference Number',    // Col 2  (B)
+  'Inquiry ID',          // Col 3  (C)
+  'Full Name',           // Col 4  (D)
+  'Email address',       // Col 5  (E)
+  'Address',             // Col 6  (F)
+  'Contact Number',      // Col 7  (G)
+  'Facebook Name',       // Col 8  (H)
+  'Car Make',            // Col 9  (I)
+  'Car Model',           // Col 10 (J)
+  'Year Model',          // Col 11 (K)
+  'Service Name',        // Col 12 (L)  ← was col 13 before
+  'Product to Purchase', // Col 13 (M)  ← was col 14 before
+  'Service Type',        // Col 14 (N)  ← was col 12 before
+  'Plate Number',        // Col 15 (O)
+  'Appointment Date',    // Col 16 (P)
+  'Appointment Time',    // Col 17 (Q)
+  'Status',              // Col 18 (R)
+  'Last Updated',        // Col 19 (S)
 ];
 
 // Column number for Sync Status – placed at column AS (46) to keep it
@@ -502,6 +504,7 @@ function buildRowArray(inquiry, colMap, totalCols, existingRowValues) {
     }
   }
 
+  // Fallback column indices MUST match the COLUMNS array order above.
   setField('Timestamp', 1, valCreated);
   setField('Reference Number', 2, valRef);
   setField('Inquiry ID', 3, valId);
@@ -513,9 +516,9 @@ function buildRowArray(inquiry, colMap, totalCols, existingRowValues) {
   setField('Car Make', 9, valMake);
   setField('Car Model', 10, valModel);
   setField('Year Model', 11, valYear);
-  setField('Service Type', 12, valServiceType);
-  setField('Service Name', 13, valService);
-  setField('Product to Purchase', 14, valProduct);
+  setField('Service Name', 12, valService);        // col 12 in actual sheet
+  setField('Product to Purchase', 13, valProduct); // col 13 in actual sheet
+  setField('Service Type', 14, valServiceType);    // col 14 in actual sheet
   setField('Plate Number', 15, valPlate);
   setField('Appointment Date', 16, valDate);
   setField('Appointment Time', 17, valTime);

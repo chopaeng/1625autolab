@@ -1950,6 +1950,8 @@ class Router
         }
 
         $booking = (new BookingService())->reschedule($id, $userId, $date, $time);
+        // Sync the rescheduled date/time to Google Sheets
+        GoogleSheetsSyncService::syncInquiry($booking);
         echo json_encode(['booking' => $booking]);
     }
 
@@ -1978,6 +1980,8 @@ class Router
             (int) ($payload['sub'] ?? 0) ?: null,
             'admin'
         );
+        // Sync the admin-rescheduled date/time to Google Sheets
+        GoogleSheetsSyncService::syncInquiry($booking);
         echo json_encode(['booking' => $booking]);
     }
 

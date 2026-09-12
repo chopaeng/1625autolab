@@ -167,6 +167,11 @@ class GoogleSheetsSyncService
     /**
      * Sends inquiry data to the Google Sheets Webhook URL if configured.
      *
+     * This method is fire-and-forget: it flushes the HTTP response to the
+     * client FIRST, then dispatches the webhook in the background so that
+     * the Google Apps Script round-trip (which can take 5-25 s) never
+     * blocks or times out the customer's browser request.
+     *
      * @param array<string, mixed> $inquiry
      */
     public static function syncInquiry(array $inquiry): void
@@ -193,31 +198,54 @@ class GoogleSheetsSyncService
             $payload = self::formatInquiryPayload($inquiry);
             $jsonPayload = json_encode($payload, JSON_UNESCAPED_UNICODE);
 
+            // ── Fire-and-forget: flush HTTP response before hitting Sheets ──
+            // This ensures the customer's browser gets a response immediately
+            // and never sees a timeout caused by the Google Apps Script latency.
+            ignore_user_abort(true);
+
+            if (function_exists('fastcgi_finish_request')) {
+                // PHP-FPM: instantly close the connection to the browser.
+                fastcgi_finish_request();
+            } elseif (!headers_sent()) {
+                // Apache mod_php: set Content-Length and flush output buffers
+                // so the browser considers the response complete.
+                $size = ob_get_length();
+                if ($size !== false && $size > 0) {
+                    header('Content-Length: ' . $size);
+                }
+                header('Connection: close');
+                ob_end_flush();
+                flush();
+            }
+            // ── Background: now call the Sheets webhook ─────────────────────
+
             $ch = curl_init();
             curl_setopt_array($ch, [
-                CURLOPT_URL => $webhookUrl,
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => $jsonPayload,
+                CURLOPT_URL            => $webhookUrl,
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => $jsonPayload,
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-                CURLOPT_MAXREDIRS => 5,
-                CURLOPT_HTTPHEADER => [
+                CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
+                CURLOPT_MAXREDIRS      => 5,
+                CURLOPT_HTTPHEADER     => [
                     'Content-Type: application/json; charset=utf-8',
                 ],
-                CURLOPT_TIMEOUT => 25,
+                // Reduced from 25 s — the customer has already received their
+                // response, so a shorter timeout is fine here.
+                CURLOPT_TIMEOUT        => 30,
                 CURLOPT_SSL_VERIFYPEER => false,
             ]);
 
-            $response = curl_exec($ch);
+            $response  = curl_exec($ch);
             $curlError = curl_error($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             curl_close($ch);
 
             if ($curlError !== '') {
                 error_log('[GoogleSheetsSyncService] cURL error: ' . $curlError);
             } else {
-                error_log("[GoogleSheetsSyncService] Outbound Webhook response ({$httpCode}): " . (string)$response);
+                error_log("[GoogleSheetsSyncService] Outbound Webhook response ({$httpCode}): " . (string) $response);
             }
         } catch (\Throwable $e) {
             error_log('[GoogleSheetsSyncService] Outbound Webhook failed: ' . $e->getMessage());
