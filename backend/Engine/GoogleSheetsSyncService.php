@@ -377,7 +377,7 @@ class GoogleSheetsSyncService
      * @param bool $bypassSecretCheck
      * @return array<string, mixed>
      */
-    public static function processInboundSync(array $data, ?string $providedSecret = null, bool $bypassSecretCheck = false): array
+    public static function processInboundSync(array $data, ?string $providedSecret = null, bool $bypassSecretCheck = false, bool $pullMode = false): array
     {
         $settings = (new SiteSettingsService())->getAll();
 
@@ -422,7 +422,7 @@ class GoogleSheetsSyncService
             foreach ($data['rows'] as $idx => $row) {
                 if (!is_array($row)) continue;
                 try {
-                    $res = self::processInboundSync($row, null, true);
+                    $res = self::processInboundSync($row, null, true, $pullMode);
                     if (($res['action'] ?? '') === 'created') $created++;
                     elseif (($res['action'] ?? '') === 'updated') $updated++;
                     else $unchanged++;
@@ -473,16 +473,25 @@ class GoogleSheetsSyncService
         $normalizedPhone = self::normalizePhone($phone);
 
         $inquirySvc = new InquiryService();
-        $existing = $inquirySvc->findMatchingInquiry([
-            'id'            => $id,
-            // referenceNumber intentionally omitted: it changes on every reschedule,
-            // so using it as a match key would create duplicate inquiries after rebooking.
-            'contactNumber' => $normalizedPhone !== '' ? $normalizedPhone : $phone,
-            'plateNumber'   => $plate,
-            'appointmentDate' => $appDate,
-            'emailAddress'  => $email,
-            'fullName'      => $fullName,
-        ]);
+
+        if ($pullMode) {
+            // Pull mode: Inquiry ID is the ONLY stable unique key.
+            // Two distinct inquiries from the same customer must not be merged
+            // via fuzzy phone/name/date matching — each row in Sheets represents
+            // a separate booking. Only match if we have a valid ID that exists.
+            $existing = ($id !== '') ? $inquirySvc->getById($id) : null;
+        } else {
+            $existing = $inquirySvc->findMatchingInquiry([
+                'id'            => $id,
+                // referenceNumber intentionally omitted: it changes on every reschedule,
+                // so using it as a match key would create duplicate inquiries after rebooking.
+                'contactNumber' => $normalizedPhone !== '' ? $normalizedPhone : $phone,
+                'plateNumber'   => $plate,
+                'appointmentDate' => $appDate,
+                'emailAddress'  => $email,
+                'fullName'      => $fullName,
+            ]);
+        }
 
         // Suppress outbound sync while updating/inserting to prevent sync echo loops
         return self::withoutSync(function () use (
@@ -718,7 +727,11 @@ class GoogleSheetsSyncService
             foreach ($rows as $index => $row) {
                 if (!is_array($row)) continue;
                 try {
-                    $res = self::processInboundSync($row, null, true);
+                    // pullMode=true: only match by Inquiry ID, never by phone/name/date.
+                    // This ensures that a customer with multiple distinct bookings in
+                    // Google Sheets always gets each row imported as its own inquiry
+                    // rather than being merged into a single record.
+                    $res = self::processInboundSync($row, null, true, true);
                     if (($res['action'] ?? '') === 'created') {
                         $created++;
                     } elseif (($res['action'] ?? '') === 'updated') {
