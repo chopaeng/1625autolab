@@ -213,8 +213,11 @@ function installedOnEdit(e) {
     return; // Headers or top title rows were edited - ignore
   }
 
-  // Prevent sync loops if the update was triggered programmatically by doPost
+  // Prevent sync loops if the update was triggered programmatically by doPost or by the sort.
   var cache = CacheService.getScriptCache();
+  if (cache.get('SUPPRESS_ALL_ONEDITS') === 'true') {
+    return;
+  }
   if (cache.get('SUPPRESS_ON_EDIT_' + row) === 'true') {
     return;
   }
@@ -354,15 +357,28 @@ function upsertInquiryRow(inquiry, isFromApi) {
   var existingRowData = isNewRow ? null : sheet.getRange(targetRow, 1, 1, numCols).getValues()[0];
   var rowArray = buildRowArray(inquiry, colMap, numCols, existingRowData);
 
-  // Write values to target row (preserving any table validations/dropdowns)
-  sheet.getRange(targetRow, 1, 1, rowArray.length).setValues([rowArray]);
+  // Suppress ALL onEdit callbacks while we write + sort so no row bounces back to Apollo
+  var cache = CacheService.getScriptCache();
+  if (isFromApi) {
+    cache.put('SUPPRESS_ALL_ONEDITS', 'true', 30);
+    cache.put('SUPPRESS_ON_EDIT_' + targetRow, 'true', 30);
+  }
 
-  // Apply row formatting
-  var valStatus = String(inquiry.status || inquiry.Status || 'pending').toLowerCase().trim();
-  applyRowStyles(sheet, targetRow, valStatus);
+  try {
+    // Write values to target row (preserving any table validations/dropdowns)
+    sheet.getRange(targetRow, 1, 1, rowArray.length).setValues([rowArray]);
 
-  // Re-sort the sheet so the latest appointment date is always at the top
-  sortByAppointmentDate(sheet);
+    // Apply row formatting
+    var valStatus = String(inquiry.status || inquiry.Status || 'pending').toLowerCase().trim();
+    applyRowStyles(sheet, targetRow, valStatus);
+
+    // Re-sort the sheet so the latest appointment date is always at the top
+    sortByAppointmentDate(sheet);
+  } finally {
+    if (isFromApi) {
+      cache.remove('SUPPRESS_ALL_ONEDITS');
+    }
+  }
 
   var valRef = String(inquiry.referenceNumber || inquiry.reference_number || inquiry['Reference Number'] || '').trim();
   var valId = inqId;
@@ -517,30 +533,41 @@ function bulkSyncRowsFromApollo(rows) {
   // Combine: new rows prepended to top (under header), followed by updated existing rows
   var combinedValues = newRows.concat(existingValues);
   if (combinedValues.length > 0) {
-    sheet.getRange(startDataRow, 1, combinedValues.length, numCols).setValues(combinedValues);
+    // Suppress ALL onEdit callbacks for the entire bulk write + sort block.
+    // Without this, sort() and setValues() physically move rows and the installable
+    // onEdit fires for every displaced row, sending them all back to Apollo as edits
+    // which Apollo wrongly interprets as reschedules or status changes.
+    var cache = CacheService.getScriptCache();
+    cache.put('SUPPRESS_ALL_ONEDITS', 'true', 60);
 
-    // Batch apply status cell formatting in one single call
-    var statusBg     = [];
-    var statusColors = [];
-    for (var k = 0; k < combinedValues.length; k++) {
-      var st = String(combinedValues[k][statusColIdx] || '').toLowerCase().trim();
-      if (st === 'confirmed') {
-        statusBg.push(['#dcfce7']); statusColors.push(['#166534']);
-      } else if (st === 'in_progress' || st === 'in progress') {
-        statusBg.push(['#fef3c7']); statusColors.push(['#92400e']);
-      } else if (st === 'completed') {
-        statusBg.push(['#e0e7ff']); statusColors.push(['#3730a3']);
-      } else if (st === 'cancelled') {
-        statusBg.push(['#fee2e2']); statusColors.push(['#991b1b']);
-      } else {
-        statusBg.push(['#fef9c3']); statusColors.push(['#854d0e']);
+    try {
+      sheet.getRange(startDataRow, 1, combinedValues.length, numCols).setValues(combinedValues);
+
+      // Batch apply status cell formatting in one single call
+      var statusBg     = [];
+      var statusColors = [];
+      for (var k = 0; k < combinedValues.length; k++) {
+        var st = String(combinedValues[k][statusColIdx] || '').toLowerCase().trim();
+        if (st === 'confirmed') {
+          statusBg.push(['#dcfce7']); statusColors.push(['#166534']);
+        } else if (st === 'in_progress' || st === 'in progress') {
+          statusBg.push(['#fef3c7']); statusColors.push(['#92400e']);
+        } else if (st === 'completed') {
+          statusBg.push(['#e0e7ff']); statusColors.push(['#3730a3']);
+        } else if (st === 'cancelled') {
+          statusBg.push(['#fee2e2']); statusColors.push(['#991b1b']);
+        } else {
+          statusBg.push(['#fef9c3']); statusColors.push(['#854d0e']);
+        }
       }
-    }
-    var statusRange = sheet.getRange(startDataRow, statusColIdx + 1, combinedValues.length, 1);
-    statusRange.setBackgrounds(statusBg).setFontColors(statusColors).setFontWeight('bold');
+      var statusRange = sheet.getRange(startDataRow, statusColIdx + 1, combinedValues.length, 1);
+      statusRange.setBackgrounds(statusBg).setFontColors(statusColors).setFontWeight('bold');
 
-    // Re-sort so the latest appointment date is always at the top
-    sortByAppointmentDate(sheet);
+      // Re-sort so the latest appointment date is always at the top
+      sortByAppointmentDate(sheet);
+    } finally {
+      cache.remove('SUPPRESS_ALL_ONEDITS');
+    }
   }
 
   return {
@@ -1127,7 +1154,8 @@ function showToast(msg, title, timeoutSec) {
 
 /**
  * Sorts all data rows by Appointment Date descending (latest first).
- * Uses the colMap to locate the Appointment Date column, falling back to col 16.
+ * Sets SUPPRESS_ALL_ONEDITS while the sort is in progress so the installable
+ * onEdit trigger does not fire for rows that physically change position.
  */
 function sortByAppointmentDate(sheet) {
   var headerRow = getHeaderRow(sheet);
@@ -1138,7 +1166,13 @@ function sortByAppointmentDate(sheet) {
   var colMap = getColumnMap(sheet);
   var dateColNum = colMap['Appointment Date'] || 16;
 
-  var dataRange = sheet.getRange(startDataRow, 1, lastRow - headerRow, sheet.getLastColumn());
-  // Sort descending by Appointment Date so the newest appointment is at the top
-  dataRange.sort({ column: dateColNum, ascending: false });
+  var cache = CacheService.getScriptCache();
+  cache.put('SUPPRESS_ALL_ONEDITS', 'true', 30);
+  try {
+    var dataRange = sheet.getRange(startDataRow, 1, lastRow - headerRow, sheet.getLastColumn());
+    // Sort descending by Appointment Date so the newest appointment is at the top
+    dataRange.sort({ column: dateColNum, ascending: false });
+  } finally {
+    cache.remove('SUPPRESS_ALL_ONEDITS');
+  }
 }
