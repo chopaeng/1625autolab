@@ -1106,11 +1106,14 @@ class InquiryService
     {
         $db = Database::getInstance();
         $stmt = $db->query(
-                'SELECT id, reference_number, user_id, service_id, service_type, full_name, address, contact_number, email_address, facebook_name, plate_number,
-                    make, model, year_model, product_to_purchase, appointment_date,
-                    appointment_time, status, internal_notes, created_at
-                 FROM customer_inquiries
-             ORDER BY appointment_date ASC, appointment_time ASC, created_at DESC'
+                'SELECT ci.id, ci.reference_number, ci.user_id, ci.service_id, ci.service_type,
+                    ci.full_name, ci.address, ci.contact_number, ci.email_address, ci.facebook_name,
+                    ci.plate_number, ci.make, ci.model, ci.year_model, ci.product_to_purchase,
+                    ci.appointment_date, ci.appointment_time, ci.status, ci.internal_notes, ci.created_at,
+                    s.title AS service_name
+                 FROM customer_inquiries ci
+                 LEFT JOIN services s ON s.id = ci.service_id
+             ORDER BY ci.appointment_date ASC, ci.appointment_time ASC, ci.created_at DESC'
         );
 
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -1191,20 +1194,23 @@ class InquiryService
         $normRef = strtolower(preg_replace('/[-_\s]+/', '', $id));
 
         $stmt = $db->prepare(
-            'SELECT id, reference_number, user_id, service_id, service_type, full_name, address, contact_number, email_address, facebook_name, plate_number,
-                make, model, year_model, product_to_purchase, appointment_date,
-                appointment_time, status, internal_notes, created_at
-             FROM customer_inquiries
-             WHERE id = :id 
-                OR id = :cleanId 
-                OR id = :prefixedId 
-                OR reference_number = :ref 
-                OR reference_number = :cleanRef
-                OR reference_number = :dashRef
-                OR reference_number = :underRef
-                OR reference_number = :cleanDashRef
-                OR reference_number = :cleanUnderRef
-                OR LOWER(REPLACE(REPLACE(REPLACE(reference_number, "-", ""), "_", ""), " ", "")) = :normRef
+            'SELECT ci.id, ci.reference_number, ci.user_id, ci.service_id, ci.service_type,
+                ci.full_name, ci.address, ci.contact_number, ci.email_address, ci.facebook_name,
+                ci.plate_number, ci.make, ci.model, ci.year_model, ci.product_to_purchase,
+                ci.appointment_date, ci.appointment_time, ci.status, ci.internal_notes, ci.created_at,
+                s.title AS service_name
+             FROM customer_inquiries ci
+             LEFT JOIN services s ON s.id = ci.service_id
+             WHERE ci.id = :id 
+                OR ci.id = :cleanId 
+                OR ci.id = :prefixedId 
+                OR ci.reference_number = :ref 
+                OR ci.reference_number = :cleanRef
+                OR ci.reference_number = :dashRef
+                OR ci.reference_number = :underRef
+                OR ci.reference_number = :cleanDashRef
+                OR ci.reference_number = :cleanUnderRef
+                OR LOWER(REPLACE(REPLACE(REPLACE(ci.reference_number, "-", ""), "_", ""), " ", "")) = :normRef
              LIMIT 1'
         );
         $stmt->execute([
@@ -1234,6 +1240,7 @@ class InquiryService
             'referenceNumber' => (string) ($row['reference_number'] ?? ''),
             'userId' => $row['user_id'] ? (string) $row['user_id'] : null,
             'serviceId' => isset($row['service_id']) && $row['service_id'] !== null ? (int) $row['service_id'] : null,
+            'serviceName' => (string) ($row['service_name'] ?? ''),
             'serviceType' => (string) ($row['service_type'] ?? 'shop_visit'),
             'service_type' => (string) ($row['service_type'] ?? 'shop_visit'),
             'fullName' => (string) ($row['full_name'] ?? ''),

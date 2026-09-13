@@ -56,24 +56,27 @@ class GoogleSheetsSyncService
      */
     public static function formatInquiryPayload(array $inquiry): array
     {
-        // Resolve service name if service_id is available
-        $serviceName = '';
-        $rawServiceId = $inquiry['serviceId'] ?? $inquiry['service_id'] ?? null;
-        if ($rawServiceId !== null && DB_NAME !== '') {
-            try {
-                $stmt = Database::getInstance()->prepare('SELECT title FROM services WHERE id = :id LIMIT 1');
-                $stmt->execute([':id' => (int) $rawServiceId]);
-                if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                    $serviceName = (string) ($row['title'] ?? '');
+        // Resolve service name:
+        // 1. serviceName is populated directly via LEFT JOIN in dbGetAll/dbGetById — use it first.
+        // 2. Fall back to a DB lookup for raw API payloads that carry serviceId but no serviceName.
+        // 3. Final fallback to productToPurchase so the column is never blank.
+        $serviceName = (string) ($inquiry['serviceName'] ?? $inquiry['service_name'] ?? $inquiry['service'] ?? '');
+
+        if ($serviceName === '') {
+            $rawServiceId = $inquiry['serviceId'] ?? $inquiry['service_id'] ?? null;
+            if ($rawServiceId !== null && DB_NAME !== '') {
+                try {
+                    $stmt = Database::getInstance()->prepare('SELECT title FROM services WHERE id = :id LIMIT 1');
+                    $stmt->execute([':id' => (int) $rawServiceId]);
+                    if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                        $serviceName = (string) ($row['title'] ?? '');
+                    }
+                } catch (\Throwable) {
+                    // Ignore service lookup failure
                 }
-            } catch (\Throwable) {
-                // Ignore service lookup failure
             }
         }
 
-        if ($serviceName === '') {
-            $serviceName = (string) ($inquiry['serviceName'] ?? $inquiry['service_name'] ?? $inquiry['service'] ?? '');
-        }
         if ($serviceName === '') {
             $serviceName = (string) ($inquiry['productToPurchase'] ?? $inquiry['product_to_purchase'] ?? '');
         }
