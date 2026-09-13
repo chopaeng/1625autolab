@@ -361,6 +361,9 @@ function upsertInquiryRow(inquiry, isFromApi) {
   var valStatus = String(inquiry.status || inquiry.Status || 'pending').toLowerCase().trim();
   applyRowStyles(sheet, targetRow, valStatus);
 
+  // Re-sort the sheet so the latest appointment date is always at the top
+  sortByAppointmentDate(sheet);
+
   var valRef = String(inquiry.referenceNumber || inquiry.reference_number || inquiry['Reference Number'] || '').trim();
   var valId = inqId;
 
@@ -535,6 +538,9 @@ function bulkSyncRowsFromApollo(rows) {
     }
     var statusRange = sheet.getRange(startDataRow, statusColIdx + 1, combinedValues.length, 1);
     statusRange.setBackgrounds(statusBg).setFontColors(statusColors).setFontWeight('bold');
+
+    // Re-sort so the latest appointment date is always at the top
+    sortByAppointmentDate(sheet);
   }
 
   return {
@@ -1119,3 +1125,20 @@ function showToast(msg, title, timeoutSec) {
   SpreadsheetApp.getActiveSpreadsheet().toast(msg, title || '1625 AutoLab', timeoutSec || 4);
 }
 
+/**
+ * Sorts all data rows by Appointment Date descending (latest first).
+ * Uses the colMap to locate the Appointment Date column, falling back to col 16.
+ */
+function sortByAppointmentDate(sheet) {
+  var headerRow = getHeaderRow(sheet);
+  var startDataRow = headerRow + 1;
+  var lastRow = sheet.getLastRow();
+  if (lastRow < startDataRow) return; // nothing to sort
+
+  var colMap = getColumnMap(sheet);
+  var dateColNum = colMap['Appointment Date'] || 16;
+
+  var dataRange = sheet.getRange(startDataRow, 1, lastRow - headerRow, sheet.getLastColumn());
+  // Sort descending by Appointment Date so the newest appointment is at the top
+  dataRange.sort({ column: dateColNum, ascending: false });
+}
