@@ -2,7 +2,7 @@
  * ========================================================================================
  * 1625 AUTOLAB - GOOGLE SHEETS BIDIRECTIONAL LIVE SYNC SCRIPT
  * ========================================================================================
- * Version: 2.3.1 (Column order fix: Service Name col 12, Product col 13, Service Type col 14)
+ * Version: 2.4.0 (Column order fix: Service Name col 12, Product col 13, Service Type col 14)
  *
  * This Google Apps Script powers real-time two-way synchronization between your Google
  * Spreadsheet ('Sales' sheet) and Apollo:
@@ -316,103 +316,24 @@ function upsertInquiryRow(inquiry, isFromApi) {
   var startDataRow = headerRow + 1;
 
   var inqId = String(inquiry.id || inquiry.inquiryId || inquiry.inquiry_id || inquiry['Inquiry ID'] || '').trim().toLowerCase();
-  var refNum = String(inquiry.referenceNumber || inquiry.reference_number || inquiry['Reference Number'] || '').trim();
-  var targetEmail = String(inquiry.emailAddress || inquiry.email_address || inquiry['Email address'] || inquiry['Email Address'] || '').toLowerCase().trim();
-  var targetPhone = cleanDigits(inquiry.contactNumber || inquiry.contact_number || inquiry['Contact Number'] || inquiry.phone);
-  var targetPlate = cleanAlphanum(inquiry.plateNumber || inquiry.plate_number || inquiry['Plate Number']);
-  var targetName = cleanAlphanum(inquiry.fullName || inquiry.full_name || inquiry['Full Name'] || inquiry.customerName);
-  var targetDate = String(inquiry.appointmentDate || inquiry.appointment_date || inquiry['Appointment Date'] || '').trim();
-  var cleanRef = cleanAlphanum(refNum);
 
   var lastRow = sheet.getLastRow();
   var targetRow = -1;
 
-  // Search existing data rows
-  if (lastRow >= startDataRow) {
+  // Inquiry ID is the only match key — no fuzzy phone/name/date fallback.
+  // Each inquiry is its own unique record; matching by anything other than
+  // its ID would merge separate bookings from the same customer.
+  if (inqId && inqId.length >= 6 && lastRow >= startDataRow) {
     var numRows = lastRow - headerRow;
     var dataRange = sheet.getRange(startDataRow, 1, numRows, sheet.getLastColumn());
     var values = dataRange.getValues();
-
-    var refColIdx = colMap['Reference Number'] ? colMap['Reference Number'] - 1 : 1;
     var idColIdx = colMap['Inquiry ID'] ? colMap['Inquiry ID'] - 1 : 2;
-    var nameColIdx = colMap['Full Name'] ? colMap['Full Name'] - 1 : 3;
-    var emailColIdx = colMap['Email address'] ? colMap['Email address'] - 1 : 4;
-    var phoneColIdx = colMap['Contact Number'] ? colMap['Contact Number'] - 1 : 6;
-    var plateColIdx = colMap['Plate Number'] ? colMap['Plate Number'] - 1 : 14;
-    var dateColIdx = colMap['Appointment Date'] ? colMap['Appointment Date'] - 1 : 15;
 
-    // PASS 1: Exact Inquiry ID only (strongest / most stable key).
-    // Reference Number is intentionally excluded here — it changes on every
-    // reschedule, so matching by it would create duplicate rows after a rebooking.
-    if (inqId && inqId.length >= 6) {
-      for (var i = 0; i < values.length; i++) {
-        var rowId = String(values[i][idColIdx] || '').toLowerCase().trim();
-        if (rowId === inqId) {
-          targetRow = startDataRow + i;
-          break;
-        }
-      }
-    }
-
-    // PASS 2: Phone + (Plate OR Date OR Name OR Email)
-    if (targetRow === -1 && targetPhone && targetPhone.length >= 7) {
-      for (var j = 0; j < values.length; j++) {
-        var rowPhone = cleanDigits(values[j][phoneColIdx]);
-        if (rowPhone !== targetPhone) continue;
-
-        var rowPlate = cleanAlphanum(values[j][plateColIdx]);
-        var rowDate = String(values[j][dateColIdx] || '').trim();
-        var rowName = cleanAlphanum(values[j][nameColIdx]);
-        var rowEmail = String(values[j][emailColIdx] || '').toLowerCase().trim();
-
-        // Phone + Plate
-        if (targetPlate && rowPlate && targetPlate === rowPlate) {
-          targetRow = startDataRow + j;
-          break;
-        }
-        // Phone + Date
-        if (targetDate && rowDate && (targetDate === rowDate || rowDate.indexOf(targetDate) !== -1)) {
-          targetRow = startDataRow + j;
-          break;
-        }
-        // Phone + Customer Name
-        if (targetName && rowName && (targetName === rowName || rowName.indexOf(targetName) !== -1 || targetName.indexOf(rowName) !== -1)) {
-          targetRow = startDataRow + j;
-          break;
-        }
-        // Phone + Email
-        if (targetEmail && rowEmail && targetEmail === rowEmail) {
-          targetRow = startDataRow + j;
-          break;
-        }
-      }
-    }
-
-    // PASS 3: Plate + Date (when plate is valid and unique)
-    if (targetRow === -1 && targetPlate && targetPlate.length >= 4 && targetDate) {
-      for (var k = 0; k < values.length; k++) {
-        var pPlate = cleanAlphanum(values[k][plateColIdx]);
-        var pDate = String(values[k][dateColIdx] || '').trim();
-        if (pPlate === targetPlate && (pDate === targetDate || pDate.indexOf(targetDate) !== -1)) {
-          targetRow = startDataRow + k;
-          break;
-        }
-      }
-    }
-
-    // PASS 4: Phone alone (if only one row matches)
-    if (targetRow === -1 && targetPhone && targetPhone.length >= 10) {
-      var phoneMatchRow = -1;
-      var phoneMatchCount = 0;
-      for (var m = 0; m < values.length; m++) {
-        var mPhone = cleanDigits(values[m][phoneColIdx]);
-        if (mPhone === targetPhone) {
-          phoneMatchCount++;
-          phoneMatchRow = startDataRow + m;
-        }
-      }
-      if (phoneMatchCount === 1) {
-        targetRow = phoneMatchRow;
+    for (var i = 0; i < values.length; i++) {
+      var rowId = String(values[i][idColIdx] || '').toLowerCase().trim();
+      if (rowId === inqId) {
+        targetRow = startDataRow + i;
+        break;
       }
     }
   }
@@ -552,37 +473,15 @@ function bulkSyncRowsFromApollo(rows) {
     ? sheet.getRange(startDataRow, 1, numExistingRows, numCols).getValues()
     : [];
 
-  // ── Pre-build hash-map indexes for O(1) matching ──────────────────────────
-  // Reference Number is excluded from the index intentionally — it changes
-  // on every reschedule, so using it as a match key creates duplicate rows.
-  // Inquiry ID is the sole primary key.
-  var idxById        = {};  // normalized inquiry ID → array index
-  var idxByPhone     = {};  // 10-digit phone → [array indices]  (may be non-unique)
-  var idxByPlateDate = {};  // plate+date → array index
-  var idxByEmail     = {};  // email → array index
-  var idxByPhoneName = {};  // phone+secondary → array index
+  // ── Pre-build Inquiry ID index for O(1) matching ─────────────────────────
+  // Inquiry ID is the sole match key — fuzzy phone/name/date/email matching
+  // is intentionally removed to prevent separate bookings from the same
+  // customer being merged into a single row.
+  var idxById = {};  // normalized inquiry ID → array index
 
   for (var ei = 0; ei < existingValues.length; ei++) {
-    var eRow = existingValues[ei];
-
-    var eId    = String(eRow[idColIdx]    || '').toLowerCase().trim();
-    var ePhone = cleanDigits(eRow[phoneColIdx]    || '');
-    var ePlate = cleanAlphanum(eRow[plateColIdx]  || '');
-    var eDate  = String(eRow[dateColIdx]  || '').trim();
-    var eName  = cleanAlphanum(eRow[nameColIdx]   || '');
-    var eEmail = String(eRow[emailColIdx] || '').toLowerCase().trim();
-
+    var eId = String(existingValues[ei][idColIdx] || '').toLowerCase().trim();
     if (eId && eId.length >= 6) { idxById[eId] = ei; }
-    if (eEmail) { idxByEmail[eEmail] = ei; }
-    if (ePlate && eDate) { idxByPlateDate[ePlate + '_' + eDate] = ei; }
-    if (ePhone && ePhone.length >= 7) {
-      if (!idxByPhone[ePhone]) { idxByPhone[ePhone] = []; }
-      idxByPhone[ePhone].push(ei);
-      if (eName)  { idxByPhoneName[ePhone + '_' + eName]           = ei; }
-      if (eEmail) { idxByPhoneName[ePhone + '_email_' + eEmail]    = ei; }
-      if (ePlate) { idxByPhoneName[ePhone + '_plate_' + ePlate]    = ei; }
-      if (eDate)  { idxByPhoneName[ePhone + '_date_'  + eDate]     = ei; }
-    }
   }
   // ──────────────────────────────────────────────────────────────────────────
 
@@ -594,56 +493,13 @@ function bulkSyncRowsFromApollo(rows) {
     var inquiry = rows[i];
     if (!inquiry) continue;
 
-    var inqId       = String(inquiry.id || inquiry.inquiryId || inquiry.inquiry_id || inquiry['Inquiry ID'] || '').trim().toLowerCase();
-    var refNum      = String(inquiry.referenceNumber || inquiry.reference_number || inquiry['Reference Number'] || '').trim();
-    var targetEmail = String(inquiry.emailAddress || inquiry.email_address || inquiry['Email address'] || inquiry['Email Address'] || '').toLowerCase().trim();
-    var targetPhone = cleanDigits(inquiry.contactNumber || inquiry.contact_number || inquiry['Contact Number'] || inquiry.phone);
-    var targetPlate = cleanAlphanum(inquiry.plateNumber || inquiry.plate_number || inquiry['Plate Number']);
-    var targetName  = cleanAlphanum(inquiry.fullName || inquiry.full_name || inquiry['Full Name'] || inquiry.customerName);
-    var targetDate  = String(inquiry.appointmentDate || inquiry.appointment_date || inquiry['Appointment Date'] || '').trim();
-    var cleanRef    = cleanAlphanum(refNum);
+    var inqId = String(inquiry.id || inquiry.inquiryId || inquiry.inquiry_id || inquiry['Inquiry ID'] || '').trim().toLowerCase();
 
     var matchedIdx = -1;
 
-    // PASS 1: Inquiry ID only (sole stable primary key).
-    // Reference Number is excluded — it changes on reschedule, which would
-    // cause a missed match and insert a duplicate row instead of updating.
-    if (matchedIdx === -1 && inqId && inqId.length >= 6 && idxById[inqId] !== undefined) {
+    // Inquiry ID only — no fuzzy fallback.
+    if (inqId && inqId.length >= 6 && idxById[inqId] !== undefined) {
       matchedIdx = idxById[inqId];
-    }
-
-    // PASS 2: Phone + (Plate | Date | Name | Email)
-    if (matchedIdx === -1 && targetPhone && targetPhone.length >= 7) {
-      if (targetPlate && idxByPhoneName[targetPhone + '_plate_' + targetPlate] !== undefined) {
-        matchedIdx = idxByPhoneName[targetPhone + '_plate_' + targetPlate];
-      } else if (targetDate && idxByPhoneName[targetPhone + '_date_' + targetDate] !== undefined) {
-        matchedIdx = idxByPhoneName[targetPhone + '_date_' + targetDate];
-      } else if (targetName && idxByPhoneName[targetPhone + '_' + targetName] !== undefined) {
-        matchedIdx = idxByPhoneName[targetPhone + '_' + targetName];
-      } else if (targetEmail && idxByPhoneName[targetPhone + '_email_' + targetEmail] !== undefined) {
-        matchedIdx = idxByPhoneName[targetPhone + '_email_' + targetEmail];
-      }
-    }
-
-    // PASS 3: Plate + Date
-    if (matchedIdx === -1 && targetPlate && targetPlate.length >= 4 && targetDate) {
-      var pdKey = targetPlate + '_' + targetDate;
-      if (idxByPlateDate[pdKey] !== undefined) {
-        matchedIdx = idxByPlateDate[pdKey];
-      }
-    }
-
-    // PASS 4: Phone alone (only if unique in the sheet)
-    if (matchedIdx === -1 && targetPhone && targetPhone.length >= 10) {
-      var phoneMatches = idxByPhone[targetPhone] || [];
-      if (phoneMatches.length === 1) {
-        matchedIdx = phoneMatches[0];
-      }
-    }
-
-    // PASS 5: Email alone (if no phone match)
-    if (matchedIdx === -1 && targetEmail && idxByEmail[targetEmail] !== undefined) {
-      matchedIdx = idxByEmail[targetEmail];
     }
 
     if (matchedIdx !== -1) {
