@@ -2115,11 +2115,10 @@ function SystemPanel() {
               <h4 className="text-xs font-mono font-bold uppercase tracking-widest text-brand-orange flex items-center gap-2">
                 <Database className="w-4 h-4" /> Google Sheets Live Sync
               </h4>
-              <span className={`flex items-center gap-1.5 text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border ${
-                googleSheetsSyncEnabled
+              <span className={`flex items-center gap-1.5 text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border ${googleSheetsSyncEnabled
                   ? 'text-emerald-400 bg-emerald-950/60 border-emerald-500/30'
                   : 'text-gray-400 bg-gray-800/60 border-gray-700'
-              }`}>
+                }`}>
                 <span className={`w-1.5 h-1.5 rounded-full ${googleSheetsSyncEnabled ? 'bg-emerald-400 animate-pulse' : 'bg-gray-500'}`}></span>
                 {googleSheetsSyncEnabled ? 'Two-Way Sync Active' : 'Sync Paused'}
               </span>
@@ -2133,11 +2132,10 @@ function SystemPanel() {
                     <span className={`w-2.5 h-2.5 rounded-full ${googleSheetsSyncEnabled ? 'bg-emerald-500 animate-pulse' : 'bg-gray-500'}`} />
                     <h4 className="text-xs font-mono font-bold uppercase tracking-wider text-white">Live Sync Controls</h4>
                   </div>
-                  <span className={`text-[10px] font-mono font-bold uppercase px-2.5 py-0.5 rounded-full border ${
-                    googleSheetsSyncEnabled
+                  <span className={`text-[10px] font-mono font-bold uppercase px-2.5 py-0.5 rounded-full border ${googleSheetsSyncEnabled
                       ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
                       : 'bg-gray-800 border-gray-700 text-gray-400'
-                  }`}>
+                    }`}>
                     {googleSheetsSyncEnabled ? '● Integration Active' : '○ Integration Disabled'}
                   </span>
                 </div>
@@ -2158,9 +2156,8 @@ function SystemPanel() {
                   </label>
 
                   {/* Outbound Sync Toggle */}
-                  <label className={`flex items-start gap-3 p-3 rounded-lg bg-brand-dark border transition-colors cursor-pointer select-none ${
-                    !googleSheetsSyncEnabled ? 'opacity-50 pointer-events-none border-gray-800' : 'border-gray-800/80 hover:border-gray-700'
-                  }`}>
+                  <label className={`flex items-start gap-3 p-3 rounded-lg bg-brand-dark border transition-colors cursor-pointer select-none ${!googleSheetsSyncEnabled ? 'opacity-50 pointer-events-none border-gray-800' : 'border-gray-800/80 hover:border-gray-700'
+                    }`}>
                     <input
                       type="checkbox"
                       disabled={!googleSheetsSyncEnabled}
@@ -2178,9 +2175,8 @@ function SystemPanel() {
                   </label>
 
                   {/* Bidirectional Inbound Toggle */}
-                  <label className={`flex items-start gap-3 p-3 rounded-lg bg-brand-dark border transition-colors cursor-pointer select-none ${
-                    !googleSheetsSyncEnabled ? 'opacity-50 pointer-events-none border-gray-800' : 'border-gray-800/80 hover:border-gray-700'
-                  }`}>
+                  <label className={`flex items-start gap-3 p-3 rounded-lg bg-brand-dark border transition-colors cursor-pointer select-none ${!googleSheetsSyncEnabled ? 'opacity-50 pointer-events-none border-gray-800' : 'border-gray-800/80 hover:border-gray-700'
+                    }`}>
                     <input
                       type="checkbox"
                       disabled={!googleSheetsSyncEnabled}
@@ -2445,7 +2441,7 @@ function SystemPanel() {
 
             {/* Modal Footer */}
             <div className="px-6 py-3.5 border-t border-gray-800 bg-brand-dark/40 flex items-center justify-between">
-              <span className="text-[11px] text-gray-500 font-mono">Supports all 16 inquiry fields &middot; Auto-detects column headers</span>
+              <span className="text-[11px] text-gray-500 font-mono">Supports all 20 columns &middot; Auto-detects column headers</span>
               <div className="flex items-center gap-2">
                 <button
                   type="button"

@@ -98,7 +98,7 @@ class GoogleSheetsSyncService
         $dateVal = (string) ($inquiry['appointmentDate'] ?? $inquiry['appointment_date'] ?? '');
         $timeVal = (string) ($inquiry['appointmentTime'] ?? $inquiry['appointment_time'] ?? '');
         $statusVal = (string) ($inquiry['status'] ?? 'pending');
-        $notesVal = (string) ($inquiry['internalNotes'] ?? $inquiry['internal_notes'] ?? '');
+        $notesVal = (string) ($inquiry['adminNotes'] ?? $inquiry['admin_notes'] ?? $inquiry['internalNotes'] ?? $inquiry['internal_notes'] ?? '');
         $createdVal = (string) ($inquiry['createdAt'] ?? $inquiry['created_at'] ?? date('Y-m-d H:i:s'));
         $nowStr = date('Y-m-d H:i:s');
 
@@ -122,6 +122,7 @@ class GoogleSheetsSyncService
             'appointmentTime' => $timeVal,
             'status' => $statusVal,
             'internalNotes' => $notesVal,
+            'adminNotes' => $notesVal,
             'lastUpdated' => $nowStr,
             'inquiryId' => $idVal,
             'referenceNumber' => $refVal,
@@ -140,6 +141,7 @@ class GoogleSheetsSyncService
             'appointment_date' => $dateVal,
             'appointment_time' => $timeVal,
             'internal_notes' => $notesVal,
+            'admin_notes' => $notesVal,
             'last_updated' => $nowStr,
 
             // Header Name Aliases for header-matching scripts
@@ -161,6 +163,7 @@ class GoogleSheetsSyncService
             'Appointment Time' => $timeVal,
             'Status' => $statusVal,
             'Internal Notes' => $notesVal,
+            'Admin Notes' => $notesVal,
             'Last Updated' => $nowStr,
             'Inquiry ID' => $idVal,
             'Reference Number' => $refVal,
@@ -463,7 +466,7 @@ class GoogleSheetsSyncService
         $rawDate = trim((string) ($data['appointmentDate'] ?? $data['appointment_date'] ?? $data['Appointment Date'] ?? $data['date'] ?? ''));
         $rawTime = trim((string) ($data['appointmentTime'] ?? $data['appointment_time'] ?? $data['Appointment Time'] ?? $data['time'] ?? ''));
         $rawStatus = trim((string) ($data['status'] ?? $data['Status'] ?? ''));
-        $notes = trim((string) ($data['internalNotes'] ?? $data['internal_notes'] ?? $data['Internal Notes'] ?? $data['notes'] ?? ''));
+        $notes = trim((string) ($data['adminNotes'] ?? $data['admin_notes'] ?? $data['Admin Notes'] ?? $data['internalNotes'] ?? $data['internal_notes'] ?? $data['Internal Notes'] ?? $data['notes'] ?? ''));
 
         // Normalize Date
         $appDate = self::normalizeDate($rawDate);

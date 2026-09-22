@@ -2,7 +2,7 @@
  * ========================================================================================
  * 1625 AUTOLAB - GOOGLE SHEETS BIDIRECTIONAL LIVE SYNC SCRIPT
  * ========================================================================================
- * Version: 2.4.0 (Column order fix: Service Name col 12, Product col 13, Service Type col 14)
+ * Version: 2.5.0 (Added Admin Notes column support)
  *
  * This Google Apps Script powers real-time two-way synchronization between your Google
  * Spreadsheet ('Sales' sheet) and Apollo:
@@ -13,7 +13,7 @@
  *     Inquiry ID, Reference Number, Phone, or Plate, and updates the row in-place without duplicating.
  *
  *  2. [Google Sheets -> Apollo]
- *     When staff/admin edits any cell on the data rows (Status, Date, Time, Name, etc.),
+ *     When staff/admin edits any cell on the data rows (Status, Date, Time, Name, Admin Notes, etc.),
  *     the installable onEdit trigger instantly sends the updated row back to Apollo.
  *
  *  3. [One-Click Bulk Sync]
@@ -51,19 +51,65 @@ var COLUMNS = [
   'Car Make',            // Col 9  (I)
   'Car Model',           // Col 10 (J)
   'Year Model',          // Col 11 (K)
-  'Service Name',        // Col 12 (L)  ← was col 13 before
-  'Product to Purchase', // Col 13 (M)  ← was col 14 before
-  'Service Type',        // Col 14 (N)  ← was col 12 before
+  'Service Name',        // Col 12 (L)
+  'Product to Purchase', // Col 13 (M)
+  'Service Type',        // Col 14 (N)
   'Plate Number',        // Col 15 (O)
   'Appointment Date',    // Col 16 (P)
   'Appointment Time',    // Col 17 (Q)
   'Status',              // Col 18 (R)
-  'Last Updated',        // Col 19 (S)
+  'Admin Notes',         // Col 19 (S)
+  'Last Updated',        // Col 20 (T)
 ];
 
-// Column number for Sync Status – placed at column AS (46) to keep it
-// far from any data-validation rules that live on the main data columns.
-var SYNC_STATUS_COL = 46; // Column AS
+// Default fallback column number for Sync Status (Column AU = 47).
+// The script dynamically locates the 'Sync' column from the sheet's header row,
+// so if your Sync column is AU (47), AS (45), or anywhere else, it automatically maps to it.
+var SYNC_STATUS_COL = 47; // Default fallback: Column AU
+
+/**
+ * Returns true if a cell value contains a sync status string (e.g. '✅ Synced (Apollo)', 'Synced (00:39:26)')
+ * rather than an actual user note.
+ */
+function isSyncStatusValue(val) {
+  var s = String(val || '').trim().toLowerCase();
+  if (!s) return false;
+  return s.indexOf('synced') !== -1 || s.indexOf('apollo') !== -1 || s.indexOf('error:') !== -1 || s.indexOf('✅') !== -1 || s.indexOf('❌') !== -1;
+}
+
+/**
+ * Dynamically resolves the Sync Status column index.
+ * 1. Checks colMap['Sync Status'] or any header containing 'sync'
+ * 2. Scans the sheet's header row for 'sync'
+ * 3. Falls back to SYNC_STATUS_COL (47 / Column AU)
+ */
+function getSyncStatusCol(sheet, colMap) {
+  if (colMap) {
+    if (colMap['Sync Status']) return colMap['Sync Status'];
+    if (colMap['sync']) return colMap['sync'];
+    for (var key in colMap) {
+      if (key.toLowerCase().indexOf('sync') !== -1 && key.toLowerCase().indexOf('note') === -1) {
+        return colMap[key];
+      }
+    }
+  }
+  if (sheet) {
+    try {
+      var headerRow = getHeaderRow(sheet);
+      var lastCol = sheet.getLastColumn();
+      if (lastCol > 0) {
+        var headers = sheet.getRange(headerRow, 1, 1, lastCol).getValues()[0];
+        for (var i = 0; i < headers.length; i++) {
+          var h = String(headers[i] || '').toLowerCase();
+          if (h.indexOf('sync') !== -1 && h.indexOf('note') === -1) {
+            return i + 1;
+          }
+        }
+      }
+    } catch (e) {}
+  }
+  return SYNC_STATUS_COL;
+}
 
 // ----------------------------------------------------------------------------------------
 // SCRIPT PROPERTIES (Storage for Website URL & Secret Key)
@@ -163,7 +209,7 @@ function doGet(e) {
     return ContentService.createTextOutput(JSON.stringify({
       status: 'ok',
       timestamp: new Date().toISOString(),
-      scriptName: '1625 AutoLab Live Sync v2.3.1'
+      scriptName: '1625 AutoLab Live Sync v2.5.0'
     })).setMimeType(ContentService.MimeType.JSON);
   }
 
@@ -276,11 +322,12 @@ function syncSingleRowToApollo(sheet, rowNumber) {
     }
 
     var colMap = getColumnMap(sheet);
+    var syncCol = getSyncStatusCol(sheet, colMap);
     var nowFormatted = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
 
     if (responseCode >= 200 && responseCode < 300 && result.success !== false) {
       // Update Sync Status and Last Updated in the sheet
-      sheet.getRange(rowNumber, SYNC_STATUS_COL).setValue('✅ Synced (' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'HH:mm:ss') + ')');
+      sheet.getRange(rowNumber, syncCol).setValue('✅ Synced (' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'HH:mm:ss') + ')');
       if (colMap['Last Updated']) {
         sheet.getRange(rowNumber, colMap['Last Updated']).setValue(nowFormatted);
       }
@@ -299,11 +346,12 @@ function syncSingleRowToApollo(sheet, rowNumber) {
       return { success: true, response: result };
     } else {
       var errMsg = result.error || ('HTTP ' + responseCode);
-      sheet.getRange(rowNumber, SYNC_STATUS_COL).setValue('❌ Error: ' + errMsg);
+      sheet.getRange(rowNumber, syncCol).setValue('❌ Error: ' + errMsg);
       return { success: false, error: errMsg };
     }
   } catch (err) {
-    sheet.getRange(rowNumber, SYNC_STATUS_COL).setValue('❌ ' + err.message);
+    var syncColCatch = (typeof getSyncStatusCol === 'function') ? getSyncStatusCol(sheet, getColumnMap(sheet)) : SYNC_STATUS_COL;
+    sheet.getRange(rowNumber, syncColCatch).setValue('❌ ' + err.message);
     return { success: false, error: err.message };
   }
 }
@@ -353,7 +401,8 @@ function upsertInquiryRow(inquiry, isFromApi) {
     CacheService.getScriptCache().put('SUPPRESS_ON_EDIT_' + targetRow, 'true', 30);
   }
 
-  var numCols = Math.max(sheet.getLastColumn(), COLUMNS.length, SYNC_STATUS_COL);
+  var syncCol = getSyncStatusCol(sheet, colMap);
+  var numCols = Math.max(sheet.getLastColumn(), COLUMNS.length, syncCol);
   var existingRowData = isNewRow ? null : sheet.getRange(targetRow, 1, 1, numCols).getValues()[0];
   var rowArray = buildRowArray(inquiry, colMap, numCols, existingRowData);
 
@@ -418,18 +467,50 @@ function buildRowArray(inquiry, colMap, totalCols, existingRowValues) {
   var valDate = String(inquiry.appointmentDate || inquiry.appointment_date || inquiry['Appointment Date'] || '').trim();
   var valTime = String(inquiry.appointmentTime || inquiry.appointment_time || inquiry['Appointment Time'] || '').trim();
   var valStatus = String(inquiry.status || inquiry.Status || 'pending').toLowerCase().trim();
+  var valNotes = String(inquiry.adminNotes || inquiry.admin_notes || inquiry['Admin Notes'] || inquiry.internalNotes || inquiry.internal_notes || inquiry['Internal Notes'] || inquiry.notes || '').trim();
+  if (isSyncStatusValue(valNotes)) {
+    valNotes = '';
+  }
   var valUpdated = inquiry.lastUpdated || inquiry['Last Updated'] || Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
   var valSync = '✅ Synced (Apollo)';
 
-  var numCols = Math.max(totalCols || 0, COLUMNS.length, SYNC_STATUS_COL);
+  var syncCol = (typeof getSyncStatusCol === 'function') ? getSyncStatusCol(null, colMap) : SYNC_STATUS_COL;
+  var numCols = Math.max(totalCols || 0, COLUMNS.length, syncCol);
   var row = existingRowValues ? existingRowValues.slice(0, numCols) : new Array(numCols).fill('');
   while (row.length < numCols) {
     row.push('');
   }
 
   function setField(colName, fallbackIdx, value) {
-    var colIdx = (colMap && colMap[colName]) ? colMap[colName] : fallbackIdx;
+    var colIdx = (colMap && (colMap[colName] || colMap[colName.toLowerCase()])) ? (colMap[colName] || colMap[colName.toLowerCase()]) : null;
+    if (!colIdx) {
+      // Only use fallbackIdx if that column is not already claimed by another header
+      var isOccupied = false;
+      if (colMap && fallbackIdx) {
+        for (var h in colMap) {
+          if (colMap[h] === fallbackIdx && h.toLowerCase() !== colName.toLowerCase()) {
+            isOccupied = true;
+            break;
+          }
+        }
+      }
+      if (!isOccupied) {
+        colIdx = fallbackIdx;
+      }
+    }
     if (colIdx && colIdx <= row.length) {
+      if (colName === 'Admin Notes' || colName === 'Notes') {
+        var existingCellVal = existingRowValues ? String(existingRowValues[colIdx - 1] || '').trim() : '';
+        // If the existing cell has a misplaced sync status (e.g. 'Synced (Apollo)'), NEVER keep it!
+        if (isSyncStatusValue(existingCellVal)) {
+          row[colIdx - 1] = value;
+          return;
+        }
+        // If incoming note is empty and existing cell has genuine note text, preserve it
+        if (value === '' && existingCellVal !== '') {
+          return;
+        }
+      }
       row[colIdx - 1] = value;
     }
   }
@@ -453,11 +534,12 @@ function buildRowArray(inquiry, colMap, totalCols, existingRowValues) {
   setField('Appointment Date', 16, valDate);
   setField('Appointment Time', 17, valTime);
   setField('Status', 18, valStatus);
-  setField('Last Updated', 19, valUpdated);
+  setField('Admin Notes', 19, valNotes);
+  setField('Last Updated', 20, valUpdated);
 
-  // Set Sync Status at SYNC_STATUS_COL
-  if (SYNC_STATUS_COL <= row.length) {
-    row[SYNC_STATUS_COL - 1] = valSync;
+  // Set Sync Status at the resolved sync column (e.g. Column AU / 47)
+  if (syncCol && syncCol <= row.length) {
+    row[syncCol - 1] = valSync;
   }
 
   return row;
@@ -473,10 +555,11 @@ function bulkSyncRowsFromApollo(rows) {
 
   var sheet = getOrCreateTargetSheet();
   var colMap = getColumnMap(sheet);
+  var syncCol = getSyncStatusCol(sheet, colMap);
   var headerRow = getHeaderRow(sheet);
   var startDataRow = headerRow + 1;
   var lastRow = sheet.getLastRow();
-  var numCols = Math.max(sheet.getLastColumn(), COLUMNS.length, SYNC_STATUS_COL);
+  var numCols = Math.max(sheet.getLastColumn(), COLUMNS.length, syncCol);
 
   var refColIdx    = colMap['Reference Number']  ? colMap['Reference Number']  - 1 : 1;
   var idColIdx     = colMap['Inquiry ID']         ? colMap['Inquiry ID']         - 1 : 2;
@@ -589,7 +672,21 @@ function getRowDataObject(sheet, rowNumber) {
   var rowValues = sheet.getRange(rowNumber, 1, 1, numCols).getValues()[0];
 
   function getVal(colName, fallbackColIdx) {
-    var colIdx = colMap[colName] || fallbackColIdx;
+    var colIdx = colMap ? (colMap[colName] || colMap[colName.toLowerCase()]) : null;
+    if (!colIdx) {
+      var isOccupied = false;
+      if (colMap && fallbackColIdx) {
+        for (var h in colMap) {
+          if (colMap[h] === fallbackColIdx && h.toLowerCase() !== colName.toLowerCase()) {
+            isOccupied = true;
+            break;
+          }
+        }
+      }
+      if (!isOccupied) {
+        colIdx = fallbackColIdx;
+      }
+    }
     if (colIdx && colIdx <= rowValues.length) {
       var v = rowValues[colIdx - 1];
       if (v instanceof Date) {
@@ -598,6 +695,11 @@ function getRowDataObject(sheet, rowNumber) {
       return (v === null || v === undefined) ? '' : String(v).trim();
     }
     return '';
+  }
+
+  var notesVal = getVal('Admin Notes', 19) || getVal('Internal Notes', 19) || getVal('Notes', 19);
+  if (isSyncStatusValue(notesVal)) {
+    notesVal = '';
   }
 
   return {
@@ -620,7 +722,9 @@ function getRowDataObject(sheet, rowNumber) {
     appointmentDate: getVal('Appointment Date', 16),
     appointmentTime: getVal('Appointment Time', 17),
     status: getVal('Status', 18),
-    lastUpdated: getVal('Last Updated', 19)
+    adminNotes: notesVal,
+    internalNotes: notesVal,
+    lastUpdated: getVal('Last Updated', 20)
   };
 }
 
@@ -638,7 +742,21 @@ function getAllInquiryObjects(sheet) {
   var allValues = sheet.getRange(startDataRow, 1, numRows, numCols).getValues();
 
   function getValFromRow(rowValues, colName, fallbackColIdx) {
-    var colIdx = colMap[colName] || fallbackColIdx;
+    var colIdx = colMap ? (colMap[colName] || colMap[colName.toLowerCase()]) : null;
+    if (!colIdx) {
+      var isOccupied = false;
+      if (colMap && fallbackColIdx) {
+        for (var h in colMap) {
+          if (colMap[h] === fallbackColIdx && h.toLowerCase() !== colName.toLowerCase()) {
+            isOccupied = true;
+            break;
+          }
+        }
+      }
+      if (!isOccupied) {
+        colIdx = fallbackColIdx;
+      }
+    }
     if (colIdx && colIdx <= rowValues.length) {
       var v = rowValues[colIdx - 1];
       if (v instanceof Date) {
@@ -652,6 +770,10 @@ function getAllInquiryObjects(sheet) {
   var result = [];
   for (var i = 0; i < allValues.length; i++) {
     var rowValues = allValues[i];
+    var notesVal = getValFromRow(rowValues, 'Admin Notes', 19) || getValFromRow(rowValues, 'Internal Notes', 19) || getValFromRow(rowValues, 'Notes', 19);
+    if (isSyncStatusValue(notesVal)) {
+      notesVal = '';
+    }
     var obj = {
       timestamp: getValFromRow(rowValues, 'Timestamp', 1),
       referenceNumber: getValFromRow(rowValues, 'Reference Number', 2),
@@ -672,7 +794,9 @@ function getAllInquiryObjects(sheet) {
       appointmentDate: getValFromRow(rowValues, 'Appointment Date', 16),
       appointmentTime: getValFromRow(rowValues, 'Appointment Time', 17),
       status: getValFromRow(rowValues, 'Status', 18),
-      lastUpdated: getValFromRow(rowValues, 'Last Updated', 19)
+      adminNotes: notesVal,
+      internalNotes: notesVal,
+      lastUpdated: getValFromRow(rowValues, 'Last Updated', 20)
     };
 
     if (obj.fullName || obj.contactNumber || obj.referenceNumber || obj.inquiryId) {
@@ -812,6 +936,16 @@ function getColumnMap(sheet) {
     if (normH === 'status' || normH.indexOf('status') !== -1) {
       map['Status'] = colNum;
     }
+    if (normH.indexOf('admin note') !== -1 || normH.indexOf('internal note') !== -1 || normH === 'notes' || normH === 'note' || normH === 'admin notes' || normH === 'internal notes' || normH === 'workspace notes') {
+      map['Admin Notes'] = colNum;
+      map['Internal Notes'] = colNum;
+      map['Notes'] = colNum;
+      map['notes'] = colNum;
+    }
+    if (normH.indexOf('sync') !== -1 && normH.indexOf('note') === -1) {
+      map['Sync Status'] = colNum;
+      map['sync'] = colNum;
+    }
     if (normH.indexOf('updated') !== -1) {
       map['Last Updated'] = colNum;
     }
@@ -838,8 +972,14 @@ function setupSheetHeaders(sheet) {
   headerRange.setVerticalAlignment('middle');
   sheet.setRowHeight(headerRow, 36);
 
-  // Service Type column dropdown validation
+  // Set Admin Notes column width for comfortable reading/editing
   var colMap = getColumnMap(sheet);
+  var adminNotesColIdx = colMap['Admin Notes'] || (COLUMNS.indexOf('Admin Notes') + 1);
+  if (adminNotesColIdx > 0) {
+    sheet.setColumnWidth(adminNotesColIdx, 220);
+  }
+
+  // Service Type column dropdown validation
   var serviceTypeColIdx = colMap['Service Type'] || (COLUMNS.indexOf('Service Type') + 1);
   if (serviceTypeColIdx > 0) {
     var serviceTypeRule = SpreadsheetApp.newDataValidation()
@@ -859,12 +999,13 @@ function setupSheetHeaders(sheet) {
     sheet.getRange(headerRow + 1, statusColIdx, 500, 1).setDataValidation(statusRule);
   }
 
-  // Write 'Sync Status' header at col AS (46)
-  sheet.getRange(headerRow, SYNC_STATUS_COL).setValue('Sync Status')
+  // Write 'Sync Status' header at the resolved sync column (Column AU / 47)
+  var syncCol = getSyncStatusCol(sheet, colMap);
+  sheet.getRange(headerRow, syncCol).setValue('Sync Status')
     .setBackground('#18181b').setFontColor('#f97316').setFontWeight('bold')
     .setFontFamily('Consolas').setFontSize(10)
     .setHorizontalAlignment('center').setVerticalAlignment('middle');
-  sheet.getRange(headerRow + 1, SYNC_STATUS_COL, 500, 1).clearDataValidations();
+  sheet.getRange(headerRow + 1, syncCol, 500, 1).clearDataValidations();
 }
 
 function applyRowStyles(sheet, rowNumber, status) {
@@ -903,6 +1044,7 @@ function onOpen() {
     .addSeparator()
     .addItem('📥 Pull All Inquiries from Website', 'menuPullAllFromWebsite')
     .addSeparator()
+    .addItem('🧹 Clean Notes Column (Fix Misplaced Sync Status)', 'menuCleanNotesColumn')
     .addItem('🧹 Remove Duplicate Rows from Sheet', 'menuRemoveDuplicates')
     .addItem('🛠️ Enable Real-Time Auto-Sync (Install Trigger)', 'installEditTrigger')
     .addItem('📋 Format Headers & Columns', 'menuFormatHeaders')
@@ -1054,6 +1196,60 @@ function installEditTrigger() {
     .create();
 
   SpreadsheetApp.getUi().alert('🎉 Auto-Sync on Edit is now ENABLED!\n\nWhenever you or your staff change any cell on data rows, it will automatically update on the website.');
+}
+
+/**
+ * One-click cleanup utility for the Notes column.
+ * Removes any misplaced 'Synced (Apollo)' or '✅ Synced (...)' values from the Notes column,
+ * and moves them to the actual Sync Status column (Column AU / 47) if empty.
+ */
+function menuCleanNotesColumn() {
+  var ui = SpreadsheetApp.getUi();
+  var sheet = getOrCreateTargetSheet();
+  var colMap = getColumnMap(sheet);
+  var notesCol = colMap['Notes'] || colMap['Admin Notes'] || colMap['Internal Notes'];
+  var syncCol = getSyncStatusCol(sheet, colMap);
+
+  if (!notesCol) {
+    ui.alert('Could not locate the "Notes" column in the sheet.');
+    return;
+  }
+
+  var headerRow = getHeaderRow(sheet);
+  var startDataRow = headerRow + 1;
+  var lastRow = sheet.getLastRow();
+
+  if (lastRow < startDataRow) {
+    ui.alert('No data rows found to clean.');
+    return;
+  }
+
+  var numRows = lastRow - headerRow;
+  var notesRange = sheet.getRange(startDataRow, notesCol, numRows, 1);
+  var notesValues = notesRange.getValues();
+  var cleanedCount = 0;
+
+  for (var i = 0; i < notesValues.length; i++) {
+    var val = String(notesValues[i][0] || '').trim();
+    if (isSyncStatusValue(val)) {
+      notesValues[i][0] = '';
+      cleanedCount++;
+      // If the actual sync column is blank, move the sync status there
+      if (syncCol && syncCol !== notesCol) {
+        var currentSync = String(sheet.getRange(startDataRow + i, syncCol).getValue() || '').trim();
+        if (!currentSync) {
+          sheet.getRange(startDataRow + i, syncCol).setValue(val);
+        }
+      }
+    }
+  }
+
+  if (cleanedCount > 0) {
+    notesRange.setValues(notesValues);
+    ui.alert('✅ Done! Removed misplaced sync status from ' + cleanedCount + ' row(s) in the Notes column (Column ' + notesCol + ') and preserved the Sync column (Column ' + syncCol + ').');
+  } else {
+    ui.alert('✅ The Notes column is already clean! No misplaced sync statuses found.');
+  }
 }
 
 /**
