@@ -806,17 +806,36 @@ class GoogleSheetsSyncService
 
     /**
      * Normalizes time strings to clean standard format (e.g. 10:00 AM).
+     *
+     * Handles:
+     *  - "10:30 AM" / "10:30 am" / "10:30"  → "10:30 AM"
+     *  - "2:05 PM" → "2:05 PM"
+     *  - Bare strtotime results are validated; a result of 0 (1970-01-01 epoch =
+     *    midnight) is treated as a parse failure to avoid a blank/12AM result when
+     *    the actual sheet value was a non-midnight time.
      */
     private static function normalizeTime(string $rawTime): string
     {
         $raw = trim($rawTime);
         if ($raw === '') return '';
 
+        // Try explicit formats first (most reliable, no date ambiguity)
+        $formats = ['g:i A', 'g:i a', 'h:i A', 'h:i a', 'H:i:s', 'H:i', 'g:i'];
+        foreach ($formats as $fmt) {
+            $dt = \DateTime::createFromFormat($fmt, $raw);
+            if ($dt !== false) {
+                return $dt->format('g:i A');
+            }
+        }
+
+        // Fall back to strtotime, but reject epoch 0 (= midnight on 1970-01-01,
+        // which typically means strtotime() failed to parse a time-only string).
         $ts = strtotime($raw);
-        if ($ts !== false) {
+        if ($ts !== false && $ts !== 0) {
             return date('g:i A', $ts);
         }
 
+        // Return raw value unchanged rather than silently losing the time
         return $raw;
     }
 

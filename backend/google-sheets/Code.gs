@@ -690,6 +690,17 @@ function getRowDataObject(sheet, rowNumber) {
     if (colIdx && colIdx <= rowValues.length) {
       var v = rowValues[colIdx - 1];
       if (v instanceof Date) {
+        // Detect time-only columns: format as 'h:mm a' (e.g. '10:30 AM')
+        // Appointment Time cells are stored as fractional-day Date objects by Sheets
+        var colNameLower = colName.toLowerCase();
+        if (colNameLower.indexOf('time') !== -1 && colNameLower.indexOf('last') === -1 && colNameLower.indexOf('timestamp') === -1) {
+          return Utilities.formatDate(v, Session.getScriptTimeZone(), 'h:mm a');
+        }
+        // Timestamp / Last Updated: full datetime
+        if (colNameLower === 'timestamp' || colNameLower.indexOf('last updated') !== -1 || colNameLower.indexOf('last_updated') !== -1) {
+          return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+        }
+        // Default: date only
         return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
       }
       return (v === null || v === undefined) ? '' : String(v).trim();
@@ -760,6 +771,17 @@ function getAllInquiryObjects(sheet) {
     if (colIdx && colIdx <= rowValues.length) {
       var v = rowValues[colIdx - 1];
       if (v instanceof Date) {
+        // Detect time-only columns: format as 'h:mm a' (e.g. '10:30 AM')
+        // Appointment Time cells are stored as fractional-day Date objects by Sheets
+        var colNameLower = colName.toLowerCase();
+        if (colNameLower.indexOf('time') !== -1 && colNameLower.indexOf('last') === -1 && colNameLower.indexOf('timestamp') === -1) {
+          return Utilities.formatDate(v, Session.getScriptTimeZone(), 'h:mm a');
+        }
+        // Timestamp / Last Updated: full datetime
+        if (colNameLower === 'timestamp' || colNameLower.indexOf('last updated') !== -1 || colNameLower.indexOf('last_updated') !== -1) {
+          return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+        }
+        // Default: date only
         return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
       }
       return (v === null || v === undefined) ? '' : String(v).trim();
